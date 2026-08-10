@@ -1,1 +1,3 @@
 "# Enterprise-Knowledge-Intelligence-Platform" 
+Learnings and Key takeaways from week-1
+LLM hallucinations,RBAC,Chunkings,Embeddings,multi part form data,reranking
