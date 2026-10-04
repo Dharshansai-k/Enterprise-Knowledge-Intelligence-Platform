@@ -6,6 +6,13 @@ import shutil
 from dotenv import load_dotenv
 from document_parser import extract_text
 from chunker import chunk_text
+from pydantic import BaseModel
+from rag_service import ask_question
+
+class QuestionRequest(BaseModel):
+    question: str
+
+
 
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -150,4 +157,24 @@ def db_test():
         "database": result[0],
         "user": result[1],
         "status": "connected"
+    }
+
+@app.post("/ask")
+def ask(request: QuestionRequest):
+
+    if not request.question.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty"
+        )
+
+    result = ask_question(
+        question=request.question,
+        n_results=5
+    )
+
+    return {
+        "question": request.question,
+        "answer": result["answer"],
+        "context": result["context"]
     }

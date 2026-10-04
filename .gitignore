@@ -4,3 +4,8 @@ __pycache__/
 uploaded documents
 API keys
 database files
+.venv/
+.env
+__pycache__/
+documents/
+chroma_db/
