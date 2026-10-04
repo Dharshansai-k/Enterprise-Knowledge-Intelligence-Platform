@@ -176,5 +176,6 @@ def ask(request: QuestionRequest):
     return {
         "question": request.question,
         "answer": result["answer"],
+        "sources": result["sources"],
         "context": result["context"]
     }
