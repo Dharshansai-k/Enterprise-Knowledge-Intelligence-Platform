@@ -2,7 +2,7 @@ from search_service import semantic_search
 from llm_service import generate_answer
 
 
-def retrieve_context(query: str, n_results: int = 5):
+def retrieve_context(query: str, n_results: int = 3):
     results = semantic_search(query, n_results)
 
     documents = results.get("documents", [[]])[0]
@@ -35,7 +35,7 @@ def retrieve_context(query: str, n_results: int = 5):
     return "\n\n".join(context_parts), sources
 
 
-def ask_question(question: str, n_results: int = 5):
+def ask_question(question: str, n_results: int = 3):
     context, sources = retrieve_context(question, n_results)
 
     answer = generate_answer(

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 function App() {
   const [question, setQuestion] = useState("");
@@ -167,8 +169,10 @@ function App() {
               }`}
             >
               <div className="message-content">
-                {message.content}
-              </div>
+  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+    {message.content}
+  </ReactMarkdown>
+</div>
 
               {/* Sources */}
               {message.role === "assistant" &&
