@@ -42,7 +42,7 @@ def generate_answer(question: str, context: str) -> str:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        max_completion_tokens=800,
+        max_completion_tokens=2048,
         temperature=0.2,
     )
 

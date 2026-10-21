@@ -15,9 +15,11 @@ from jwt.exceptions import InvalidTokenError
 from fastapi import Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth_service import get_user_by_id
-
+from embedding_service import generate_embedding
+from chroma_service import add_chunk,delete_document_chunks
 class QuestionRequest(BaseModel):
     question: str
+    filename: str | None = None
 
 
 
@@ -178,54 +180,238 @@ UPLOAD_DIR = "../documents"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+
 @app.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...),current_user: dict = Depends(get_current_user),):
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
     if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
+        raise HTTPException(
+            status_code=400,
+            detail="Filename is required",
+        )
 
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    # Prevent directory traversal through uploaded filenames.
+    filename = os.path.basename(file.filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    if not filename.lower().endswith((".pdf", ".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and TXT files are supported.",
+        )
+
+    file_path = os.path.join(UPLOAD_DIR, filename)
 
     try:
-        text = extract_text(file_path, file.content_type)
-    except ValueError as e:
-        os.remove(file_path)
-        raise HTTPException(status_code=400, detail=str(e))
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    chunks = chunk_text(text)
+        try:
+            text = extract_text(file_path, file.content_type)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
+        if not text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No readable text was found in the document.",
+            )
+
+        chunks = chunk_text(text)
+
+        if not chunks:
+            raise HTTPException(
+                status_code=400,
+                detail="No text chunks were generated.",
+            )
+
+        # Generate embeddings before writing to the database.
+        embeddings = [
+            generate_embedding(chunk)
+            for chunk in chunks
+        ]
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        indexed_chunk_ids = []
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO documents
+                    (filename, file_path, file_type, owner_id)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    filename,
+                    file_path,
+                    file.content_type,
+                    current_user["id"],
+                ),
+            )
+
+            document_id = cursor.fetchone()[0]
+            chunk_records = []
+
+            for index, chunk in enumerate(chunks):
+                cursor.execute(
+                    """
+                    INSERT INTO document_chunks
+                        (document_id, chunk_index, content)
+                    VALUES (%s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (document_id, index, chunk),
+                )
+
+                chunk_id = cursor.fetchone()[0]
+                chunk_records.append((chunk_id, index, chunk))
+
+            # Index each chunk in ChromaDB.
+            for (chunk_id, index, chunk), embedding in zip(
+                chunk_records, embeddings
+            ):
+                add_chunk(
+                    chunk_id=str(chunk_id),
+                    content=chunk,
+                    embedding=embedding,
+                    metadata={
+                        "document_id": document_id,
+                        "filename": filename,
+                        "chunk_index": index,
+                    },
+                )
+                indexed_chunk_ids.append(str(chunk_id))
+
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+
+            # Best-effort cleanup if some chunks were indexed.
+            if indexed_chunk_ids:
+                try:
+                    from chroma_service import collection
+                    collection.delete(ids=indexed_chunk_ids)
+                except Exception:
+                    pass
+
+            raise
+
+        finally:
+            cursor.close()
+            conn.close()
+
+        return {
+            "message": "Document uploaded and indexed successfully",
+            "document_id": document_id,
+            "filename": filename,
+            "chunks_created": len(chunks),
+            "characters_extracted": len(text),
+        }
+
+    except HTTPException:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
+
+    except Exception:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail="Document upload or indexing failed.",
+        )
+
+    finally:
+        await file.close()
+
+
+@app.get("/documents")
+def list_documents(
+    current_user: dict = Depends(get_current_user),
+):
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
         cursor.execute(
             """
-            INSERT INTO documents
-                (filename, file_path, file_type, owner_id)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id;
+            SELECT id, filename, file_type, uploaded_at
+            FROM documents
+            WHERE owner_id = %s
+            ORDER BY uploaded_at DESC, id DESC;
             """,
-            (
-                file.filename,
-                file_path,
-                file.content_type,
-                current_user["id"],
-            ),
+            (current_user["id"],),
         )
 
-        document_id = cursor.fetchone()[0]
+        rows = cursor.fetchall()
 
-        for index, chunk in enumerate(chunks):
-            cursor.execute(
-                """
-                INSERT INTO document_chunks
-                (document_id, chunk_index, content)
-                VALUES (%s, %s, %s);
-                """,
-                (document_id, index, chunk),
+        return {
+            "documents": [
+                {
+                    "id": row[0],
+                    "filename": row[1],
+                    "file_type": row[2],
+                    "uploaded_at": (
+                        row[3].isoformat() if row[3] else None
+                    ),
+                }
+                for row in rows
+            ]
+        }
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT filename, file_path
+            FROM documents
+            WHERE id = %s AND owner_id = %s;
+            """,
+            (document_id, current_user["id"]),
+        )
+        document = cursor.fetchone()
+
+        if not document:
+            raise HTTPException(
+                status_code=404,
+                detail="Document not found.",
             )
+
+        filename, file_path = document
+
+        # Remove vectors before deleting the database records.
+        delete_document_chunks(document_id)
+
+        cursor.execute(
+            "DELETE FROM document_chunks WHERE document_id = %s;",
+            (document_id,),
+        )
+
+        cursor.execute(
+            """
+            DELETE FROM documents
+            WHERE id = %s AND owner_id = %s;
+            """,
+            (document_id, current_user["id"]),
+        )
 
         conn.commit()
 
@@ -237,50 +423,17 @@ async def upload_document(file: UploadFile = File(...),current_user: dict = Depe
         cursor.close()
         conn.close()
 
-    return {
-        "message": "Document processed successfully",
-        "document_id": document_id,
-        "filename": file.filename,
-        "chunks_created": len(chunks),
-        "characters_extracted": len(text),
-    }
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
-
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    try:
-        text = extract_text(file_path, file.content_type)
-    except ValueError as e:
-        os.remove(file_path)
-        raise HTTPException(status_code=400, detail=str(e))
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO documents (filename, file_path, file_type)
-        VALUES (%s, %s, %s)
-        RETURNING id;
-        """,
-        (file.filename, file_path, file.content_type),
-    )
-
-    document_id = cursor.fetchone()[0]
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+    # Remove the uploaded file after successful database deletion.
+    if file_path and os.path.isfile(file_path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
 
     return {
-        "message": "Document uploaded and text extracted successfully",
+        "message": "Document deleted successfully.",
         "document_id": document_id,
-        "filename": file.filename,
-        "characters_extracted": len(text),
+        "filename": filename,
     }
 
 
@@ -304,9 +457,12 @@ def db_test():
         "status": "connected"
     }
 
-@app.post("/ask")
-def ask(request: QuestionRequest):
 
+@app.post("/ask")
+def ask(
+    request: QuestionRequest,
+    current_user: dict = Depends(get_current_user),
+):
     if not request.question.strip():
         raise HTTPException(
             status_code=400,
@@ -315,7 +471,9 @@ def ask(request: QuestionRequest):
 
     result = ask_question(
         question=request.question,
-        n_results=5
+        n_results=5,
+        user_id=current_user["id"],
+        filename=request.filename,
     )
 
     return {
