@@ -17,14 +17,23 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth_service import get_user_by_id
 from embedding_service import generate_embedding
 from chroma_service import add_chunk,delete_document_chunks
+from database import get_db_connection
+from conversation_service import (
+    create_conversation,
+    list_conversations,
+    get_conversation,
+    save_message,
+    list_messages,
+)
+
+
 class QuestionRequest(BaseModel):
     question: str
     filename: str | None = None
 
 
 
-load_dotenv()
-DATABASE_URL = os.getenv("DATABASE_URL")
+
 
 app = FastAPI(title="EKIP API")
 
@@ -168,12 +177,6 @@ def read_current_user(
     current_user: dict = Depends(get_current_user),
 ):
     return current_user
-
-
-
-#Database connection
-def get_db_connection():
-    return psycopg.connect(DATABASE_URL)
 
 
 UPLOAD_DIR = "../documents"
@@ -481,4 +484,201 @@ def ask(
         "answer": result["answer"],
         "sources": result["sources"],
         "context": result["context"]
+    }
+
+
+
+class ConversationCreateRequest(BaseModel):
+    title: str = Field(default="New conversation", min_length=1, max_length=200)
+
+
+class MessageCreateRequest(BaseModel):
+    role: str
+    content: str = Field(min_length=1)
+    sources: list[dict] = Field(default_factory=list)
+
+
+@app.post("/conversations", status_code=201)
+def create_conversation_route(
+    request: ConversationCreateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+
+    return create_conversation(
+        user_id=current_user["id"],
+        title=title,
+    )
+
+
+@app.get("/conversations")
+def list_conversations_route(
+    current_user: dict = Depends(get_current_user),
+):
+    conversations = list_conversations(current_user["id"])
+    return {"conversations": conversations}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation_route(
+    conversation_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    conversation = get_conversation(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+    )
+
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    messages = list_messages(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+    )
+
+    return {
+        "conversation": conversation,
+        "messages": messages,
+    }
+
+
+
+@app.post("/conversations/{conversation_id}/messages", status_code=201)
+def save_conversation_message_route(
+    conversation_id: int,
+    request: MessageCreateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    conversation = get_conversation(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    if request.role not in {"user", "assistant"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Role must be 'user' or 'assistant'.",
+        )
+
+    if not request.content.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Message content cannot be empty.",
+        )
+
+    message = save_message(
+        conversation_id=conversation_id,
+        role=request.role,
+        content=request.content,
+        sources=request.sources if request.role == "assistant" else [],
+    )
+
+    # Set the title from the first user question.
+    if (
+        request.role == "user"
+        and conversation["title"] == "New conversation"
+    ):
+        title = " ".join(request.content.strip().split())
+
+        if len(title) > 50:
+            title = title[:47].rstrip() + "..."
+
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                UPDATE conversations
+                SET title = %s, updated_at = NOW()
+                WHERE id = %s AND user_id = %s
+                """,
+                (title, conversation_id, current_user["id"]),
+            )
+
+    # Return a response for BOTH user and assistant messages.
+    return {"message": message}
+
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+@app.patch("/conversations/{conversation_id}")
+def rename_conversation_route(
+    conversation_id: int,
+    request: ConversationRenameRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    conversation = get_conversation(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    title = " ".join(request.title.strip().split())
+
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail="Title cannot be empty.",
+        )
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE conversations
+            SET title = %s, updated_at = NOW()
+            WHERE id = %s AND user_id = %s
+            """,
+            (title, conversation_id, current_user["id"]),
+        )
+
+    return {
+        "id": conversation_id,
+        "title": title,
+    }
+
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation_route(
+    conversation_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    conversation = get_conversation(
+        user_id=current_user["id"],
+        conversation_id=conversation_id,
+    )
+
+    if not conversation:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM conversations
+            WHERE id = %s AND user_id = %s
+            """,
+            (conversation_id, current_user["id"]),
+        )
+
+    return {
+        "message": "Conversation deleted successfully.",
+        "conversation_id": conversation_id,
     }

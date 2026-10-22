@@ -30,6 +30,13 @@ function App() {
   const [showDocumentManager, setShowDocumentManager] = useState(false);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [deletingDocuments, setDeletingDocuments] = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [renamingConversationId, setRenamingConversationId] = useState(null);
+  const [renameTitle, setRenameTitle] = useState("");
+
+
 
   const fileInputRef = useRef(null);
 
@@ -111,6 +118,223 @@ function App() {
     setLoginError("");
     setLoading(false);
   };
+
+
+const fetchConversations = async () => {
+  if (!token) return;
+
+  setHistoryLoading(true);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/conversations`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to load conversations.");
+    }
+
+    setConversations(data.conversations || []);
+  } catch (error) {
+    console.error("Conversation history error:", error);
+  } finally {
+    setHistoryLoading(false);
+  }
+};
+
+const createConversation = async () => {
+  const response = await fetch(`${API_BASE_URL}/conversations`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ title: "New conversation" }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Failed to create conversation.");
+  }
+
+  const conversation = data;
+
+  setConversations((previous) => [
+    conversation,
+    ...previous.filter((item) => item.id !== conversation.id),
+  ]);
+
+  setActiveConversationId(conversation.id);
+
+  return conversation.id;
+};
+
+const openConversation = async (conversationId) => {
+  setHistoryLoading(true);
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/conversations/${conversationId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to open conversation.");
+    }
+
+    setActiveConversationId(data.conversation.id);
+    setMessages(
+      (data.messages || []).map((message) => ({
+        role: message.role,
+        content: message.content,
+        sources: message.sources || [],
+      }))
+    );
+
+    setQuestion("");
+  } catch (error) {
+    console.error("Open conversation error:", error);
+    setUploadError(error.message || "Unable to open conversation.");
+  } finally {
+    setHistoryLoading(false);
+  }
+};
+
+
+const renameConversation = async (conversationId) => {
+  const title = renameTitle.trim();
+
+  if (!title) {
+    setUploadError("Conversation title cannot be empty.");
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/conversations/${conversationId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ title }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to rename conversation.");
+    }
+
+    setConversations((previous) =>
+      previous.map((conversation) =>
+        conversation.id === conversationId
+          ? { ...conversation, title: data.title }
+          : conversation
+      )
+    );
+
+    setRenamingConversationId(null);
+    setRenameTitle("");
+    setUploadError("");
+  } catch (error) {
+    setUploadError(error.message || "Unable to rename conversation.");
+  }
+};
+
+
+const deleteConversation = async (conversationId) => {
+  const conversation = conversations.find(
+    (item) => item.id === conversationId
+  );
+
+  if (!conversation) return;
+
+  const confirmed = window.confirm(
+    `Delete "${conversation.title}"? This will permanently delete its messages.`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/conversations/${conversationId}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Failed to delete conversation.");
+    }
+
+    setConversations((previous) =>
+      previous.filter((item) => item.id !== conversationId)
+    );
+
+    if (activeConversationId === conversationId) {
+      setActiveConversationId(null);
+      setMessages([]);
+      setQuestion("");
+    }
+
+    setUploadError("");
+  } catch (error) {
+    setUploadError(error.message || "Unable to delete conversation.");
+  }
+};
+
+
+const saveConversationMessage = async (
+  conversationId,
+  role,
+  content,
+  sources = []
+) => {
+  const response = await fetch(
+    `${API_BASE_URL}/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ role, content, sources }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || "Failed to save chat message.");
+  }
+
+  return data.message;
+};
+
 
 
 useEffect(() => {
@@ -309,69 +533,112 @@ const deleteDocument = async (doc) => {
 };
 
 
-  const askQuestion = async (overrideQuestion) => {
-    const userQuestion = (overrideQuestion ?? question).trim();
-    if (!userQuestion || loading) return;
+useEffect(() => {
+  if (token) {
+    fetchConversations();
+  } else {
+    setConversations([]);
+    setActiveConversationId(null);
+  }
+}, [token]);
 
-    if (!token) {
+
+
+const askQuestion = async (overrideQuestion) => {
+  const userQuestion = (overrideQuestion ?? question).trim();
+  if (!userQuestion || loading) return;
+
+  if (!token) {
+    logout();
+    return;
+  }
+
+  setQuestion("");
+  setMessages((previous) => [
+    ...previous,
+    { role: "user", content: userQuestion },
+  ]);
+  setLoading(true);
+
+  let conversationId = activeConversationId;
+
+  try {
+    // Create a conversation for the first question.
+    if (!conversationId) {
+      conversationId = await createConversation();
+    }
+
+    // Save the user's question.
+    await saveConversationMessage(
+      conversationId,
+      "user",
+      userQuestion
+    );
+
+    // Ask EKIP.
+    const response = await fetch(`${API_BASE_URL}/ask`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        question: userQuestion,
+        filename: selectedDocument || null,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
       logout();
+      setLoginError("Your session expired. Please log in again.");
       return;
     }
 
-    setQuestion("");
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to answer your question.");
+    }
+
+    const answer = data.answer || "No answer was returned.";
+    const sources = data.sources || [];
+
+    // Display the answer and sources.
     setMessages((previous) => [
       ...previous,
-      { role: "user", content: userQuestion },
+      {
+        role: "assistant",
+        content: answer,
+        sources,
+      },
     ]);
-    setLoading(true);
 
-    try {
-      const response = await fetch(`${API_BASE_URL}/ask`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          question: userQuestion,
-          filename: selectedDocument || null,
-        }),
-      });
+    // Save the assistant's answer.
+    await saveConversationMessage(
+      conversationId,
+      "assistant",
+      answer,
+      sources
+    );
 
-      const data = await response.json().catch(() => ({}));
+    // Refresh the conversation list.
+    await fetchConversations();
+  } catch (error) {
+    console.error("Chat error:", error);
 
-      if (response.status === 401) {
-        logout();
-        setLoginError("Your session expired. Please log in again.");
-        return;
-      }
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Unable to answer your question.");
-      }
-
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "assistant",
-          content: data.answer || "No answer was returned.",
-          sources: data.sources || [],
-        },
-      ]);
-    } catch (error) {
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "assistant",
-          content: `Error: ${error.message}`,
-          sources: [],
-          error: true,
-        },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    setMessages((previous) => [
+      ...previous,
+      {
+        role: "assistant",
+        content: `Error: ${error.message}`,
+        sources: [],
+        error: true,
+      },
+    ]);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleKeyDown = (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -447,7 +714,120 @@ const deleteDocument = async (doc) => {
   }
 
   return (
-    <div className="app">
+  <div className="app">
+    <aside className="conversation-sidebar">
+      <button
+        type="button"
+        className="new-chat-button"
+        onClick={() => {
+          setActiveConversationId(null);
+          setMessages([]);
+          setQuestion("");
+          setUploadError("");
+        }}
+      >
+        + New chat
+      </button>
+
+      <div className="conversation-sidebar-heading">
+        Recent conversations
+      </div>
+
+      <div className="conversation-list">
+        {historyLoading && conversations.length === 0 ? (
+          <p className="conversation-empty">Loading chats...</p>
+        ) : conversations.length === 0 ? (
+          <p className="conversation-empty">No conversations yet</p>
+        ) : (
+          
+conversations.map((conversation) => (
+  <div
+    key={conversation.id}
+    className={`conversation-entry ${
+      activeConversationId === conversation.id ? "active" : ""
+    }`}
+  >
+    {renamingConversationId === conversation.id ? (
+      <form
+        className="conversation-rename-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          renameConversation(conversation.id);
+        }}
+      >
+        <input
+          autoFocus
+          value={renameTitle}
+          maxLength={200}
+          onChange={(event) => setRenameTitle(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setRenamingConversationId(null);
+              setRenameTitle("");
+            }
+          }}
+          aria-label="Conversation title"
+        />
+        <button type="submit" title="Save title">✓</button>
+        <button
+          type="button"
+          title="Cancel"
+          onClick={() => {
+            setRenamingConversationId(null);
+            setRenameTitle("");
+          }}
+        >
+          ✕
+        </button>
+      </form>
+    ) : (
+      <>
+        <button
+          type="button"
+          className={`conversation-item ${
+            activeConversationId === conversation.id ? "active" : ""
+          }`}
+          onClick={() => openConversation(conversation.id)}
+          disabled={historyLoading}
+          title={conversation.title}
+        >
+          <span className="conversation-item-icon">▤</span>
+          <span className="conversation-item-title">
+            {conversation.title || "New conversation"}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className="conversation-rename-button"
+          title="Rename conversation"
+          aria-label={`Rename ${conversation.title}`}
+          onClick={() => {
+            setRenamingConversationId(conversation.id);
+            setRenameTitle(conversation.title || "");
+          }}
+        >
+          ✎
+        </button>
+
+<button
+  type="button"
+  className="conversation-delete-button"
+  title="Delete conversation"
+  aria-label={`Delete ${conversation.title}`}
+  onClick={() => deleteConversation(conversation.id)}
+>
+  🗑
+</button>
+
+      </>
+    )}
+  </div>
+))
+)
+}
+      </div>
+    </aside>
       <header className="header">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">✦</div>
