@@ -35,8 +35,29 @@ function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [renamingConversationId, setRenamingConversationId] = useState(null);
   const [renameTitle, setRenameTitle] = useState("");
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [issueModalOpen, setIssueModalOpen] = useState(false);
+  const [issueQuestion, setIssueQuestion] = useState("");
+  const [issueCategory, setIssueCategory] = useState("missing_information");
+  const [issueDetails, setIssueDetails] = useState("");
+  const [issueSubmitting, setIssueSubmitting] = useState(false);
+  const [issueError, setIssueError] = useState("");
+  const [issueSuccess, setIssueSuccess] = useState("");
+  const [showMyIssues, setShowMyIssues] = useState(false);
+  const [myIssues, setMyIssues] = useState([]);
+  const [myIssuesLoading, setMyIssuesLoading] = useState(false);
+  const [myIssuesError, setMyIssuesError] = useState("");
 
-
+  const [currentUser, setCurrentUser] = useState(null);
+  const [showAdminDashboard, setShowAdminDashboard] = useState(false);
+  const [adminIssues, setAdminIssues] = useState([]);
+  const [adminIssuesLoading, setAdminIssuesLoading] = useState(false);
+  const [adminIssuesError, setAdminIssuesError] = useState("");
+  const [adminStatusFilter, setAdminStatusFilter] = useState("all");
+  const [editingIssueId, setEditingIssueId] = useState(null);
+  const [editIssueStatus, setEditIssueStatus] = useState("under_review");
+  const [editIssueResponse, setEditIssueResponse] = useState("");
+  const [issueUpdateLoading, setIssueUpdateLoading] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -151,6 +172,35 @@ const fetchConversations = async () => {
   }
 };
 
+const fetchCurrentUser = async () => {
+  if (!token) {
+    setCurrentUser(null);
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error("Unable to load your account information.");
+    }
+
+    const data = await response.json();
+    setCurrentUser(data);
+  } catch (error) {
+    console.error("Current user error:", error);
+  }
+};
+
 const createConversation = async () => {
   const response = await fetch(`${API_BASE_URL}/conversations`, {
     method: "POST",
@@ -216,6 +266,12 @@ const openConversation = async (conversationId) => {
   }
 };
 
+
+const filteredConversations = conversations.filter((conversation) =>
+  (conversation.title || "New conversation")
+    .toLowerCase()
+    .includes(conversationSearch.trim().toLowerCase())
+);
 
 const renameConversation = async (conversationId) => {
   const title = renameTitle.trim();
@@ -306,6 +362,191 @@ const deleteConversation = async (conversationId) => {
     setUploadError(error.message || "Unable to delete conversation.");
   }
 };
+
+
+const submitKnowledgeIssue = async (event) => {
+  event.preventDefault();
+
+  if (issueSubmitting || !issueQuestion.trim() || !token) {
+    return;
+  }
+
+  setIssueSubmitting(true);
+  setIssueError("");
+  setIssueSuccess("");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/issues`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        question: issueQuestion.trim(),
+        category: issueCategory,
+        details: issueDetails.trim() || null,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
+      logout();
+      setLoginError("Your session expired. Please log in again.");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to submit your issue.");
+    }
+
+    setIssueSuccess(
+      `Issue #${data.issue.id} submitted successfully. You can track its status in My Issues once that page is available.`
+    );
+  } catch (error) {
+    console.error("Issue submission error:", error);
+    setIssueError(
+      error instanceof TypeError
+        ? "Unable to connect to EKIP. Please try again."
+        : error.message || "Unable to submit your issue."
+    );
+  } finally {
+    setIssueSubmitting(false);
+  }
+};
+
+
+const fetchMyIssues = async () => {
+  if (!token || myIssuesLoading) return;
+
+  setMyIssuesLoading(true);
+  setMyIssuesError("");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/issues`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
+      logout();
+      setLoginError("Your session expired. Please log in again.");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to load your issues.");
+    }
+
+    setMyIssues(data.issues || []);
+  } catch (error) {
+    console.error("My issues error:", error);
+    setMyIssuesError(
+      error instanceof TypeError
+        ? "Unable to connect to EKIP. Please try again."
+        : error.message || "Unable to load your issues."
+    );
+  } finally {
+    setMyIssuesLoading(false);
+  }
+};
+
+
+const fetchAdminIssues = async () => {
+  if (!token || adminIssuesLoading) return;
+
+  setAdminIssuesLoading(true);
+  setAdminIssuesError("");
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/issues`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
+      logout();
+      setLoginError("Your session expired. Please log in again.");
+      return;
+    }
+
+    if (response.status === 403) {
+      throw new Error("You don't have permission to view admin issues.");
+    }
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to load admin issues.");
+    }
+
+    setAdminIssues(data.issues || []);
+  } catch (error) {
+    console.error("Admin issues error:", error);
+    setAdminIssuesError(
+      error instanceof TypeError
+        ? "Unable to connect to EKIP. Please try again."
+        : error.message || "Unable to load admin issues."
+    );
+  } finally {
+    setAdminIssuesLoading(false);
+  }
+};
+
+
+const updateAdminIssue = async (issueId) => {
+  if (issueUpdateLoading) return;
+
+  setIssueUpdateLoading(true);
+  setAdminIssuesError("");
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/admin/issues/${issueId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          status: editIssueStatus,
+          admin_response: editIssueResponse.trim() || null,
+        }),
+      }
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
+      logout();
+      setLoginError("Your session expired. Please log in again.");
+      return;
+    }
+
+    if (response.status === 403) {
+      throw new Error("You don't have permission to update issues.");
+    }
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to update the issue.");
+    }
+
+    await fetchAdminIssues();
+    setEditingIssueId(null);
+  } catch (error) {
+    console.error("Update issue error:", error);
+    setAdminIssuesError(error.message || "Unable to update the issue.");
+  } finally {
+    setIssueUpdateLoading(false);
+  }
+};
+
 
 
 const saveConversationMessage = async (
@@ -536,9 +777,11 @@ const deleteDocument = async (doc) => {
 useEffect(() => {
   if (token) {
     fetchConversations();
+    fetchCurrentUser();
   } else {
     setConversations([]);
     setActiveConversationId(null);
+    setCurrentUser(null);
   }
 }, [token]);
 
@@ -584,7 +827,9 @@ const askQuestion = async (overrideQuestion) => {
       },
       body: JSON.stringify({
         question: userQuestion,
-        filename: selectedDocument || null,
+        document_id: selectedDocument
+          ? Number(selectedDocument)
+          : null,
       }),
     });
 
@@ -604,14 +849,18 @@ const askQuestion = async (overrideQuestion) => {
     const sources = data.sources || [];
 
     // Display the answer and sources.
-    setMessages((previous) => [
-      ...previous,
-      {
-        role: "assistant",
-        content: answer,
-        sources,
-      },
-    ]);
+    setMessages(previous => [
+  ...previous,
+  {
+    role: "assistant",
+    content: answer,
+    sources,
+    hasSufficientEvidence: data.has_sufficient_evidence,
+  },
+]);
+
+
+
 
     // Save the assistant's answer.
     await saveConversationMessage(
@@ -624,20 +873,37 @@ const askQuestion = async (overrideQuestion) => {
     // Refresh the conversation list.
     await fetchConversations();
   } catch (error) {
-    console.error("Chat error:", error);
+  console.error("Chat error:", error);
 
-    setMessages((previous) => [
+  const errorMessage =
+    error instanceof TypeError
+      ? "Unable to connect to EKIP. Please check your connection and try again."
+      : error.message || "Something went wrong. Please try again.";
+
+  setMessages((previous) => {
+    const lastMessage = previous[previous.length - 1];
+
+    // Don't add a duplicate error if the answer is already displayed.
+    if (
+      lastMessage?.role === "assistant" &&
+      !lastMessage.error
+    ) {
+      return previous;
+    }
+
+    return [
       ...previous,
       {
         role: "assistant",
-        content: `Error: ${error.message}`,
+        content: errorMessage,
         sources: [],
         error: true,
       },
-    ]);
-  } finally {
-    setLoading(false);
-  }
+    ];
+  });
+} finally {
+  setLoading(false);
+}
 };
 
   const handleKeyDown = (event) => {
@@ -648,9 +914,11 @@ const askQuestion = async (overrideQuestion) => {
   };
 
   const clearChat = () => {
-    setMessages([]);
-    setQuestion("");
-  };
+  setActiveConversationId(null);
+  setMessages([]);
+  setQuestion("");
+  setUploadError("");
+};;
 
   if (!token) {
     return (
@@ -728,19 +996,28 @@ const askQuestion = async (overrideQuestion) => {
       >
         + New chat
       </button>
+        <input
+            type="search"
+            className="conversation-search"
+            placeholder="Search conversations..."
+            value={conversationSearch}
+            onChange={(event) => setConversationSearch(event.target.value)}
+            aria-label="Search conversations"
+          />
+
 
       <div className="conversation-sidebar-heading">
         Recent conversations
       </div>
 
       <div className="conversation-list">
-        {historyLoading && conversations.length === 0 ? (
+        {historyLoading && filteredConversations.length === 0 ? (
           <p className="conversation-empty">Loading chats...</p>
-        ) : conversations.length === 0 ? (
+        ) : filteredConversations.length === 0 ? (
           <p className="conversation-empty">No conversations yet</p>
         ) : (
           
-conversations.map((conversation) => (
+filteredConversations.map((conversation) => (
   <div
     key={conversation.id}
     className={`conversation-entry ${
@@ -847,6 +1124,30 @@ conversations.map((conversation) => (
                 Manage Documents
               </button>
 
+          <button
+          className="header-button"
+          type="button"
+          onClick={() => {
+            setShowMyIssues(true);
+            fetchMyIssues();
+          }}
+        >
+          My Issues
+        </button>
+
+        {currentUser?.role === "admin" && (
+        <button
+          className="header-button"
+          type="button"
+          onClick={() => {
+              setShowAdminDashboard(true);
+              fetchAdminIssues();
+            }}
+        >
+          Admin Dashboard
+        </button>
+)}
+
           <button className="theme-toggle" type="button" onClick={toggleTheme}>
             {theme === "light" ? "☾ Dark" : "☀ Light"}
           </button>
@@ -883,6 +1184,273 @@ conversations.map((conversation) => (
           {uploadMessage && <p role="status">{uploadMessage}</p>}
 {uploadError && <p role="alert">{uploadError}</p>}
       <main className="chat-container" ref={chatContainerRef}>
+
+{showAdminDashboard && (
+  <div
+    className="document-modal-overlay"
+    onClick={(event) => {
+      if (event.target === event.currentTarget) {
+        setShowAdminDashboard(false);
+      }
+    }}
+  >
+    <section
+      className="document-modal my-issues-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="admin-dashboard-title"
+    >
+      <div className="document-modal-header">
+        <div>
+          <h2 id="admin-dashboard-title">Admin Dashboard</h2>
+          <p>{adminIssues.length} reported issue(s)</p>
+        </div>
+
+        <button
+          type="button"
+          className="header-button"
+          onClick={() => setShowAdminDashboard(false)}
+          aria-label="Close admin dashboard"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="admin-issues-toolbar">
+  <label htmlFor="admin-status-filter">Filter by status</label>
+
+  <select
+    id="admin-status-filter"
+    value={adminStatusFilter}
+    onChange={(event) => setAdminStatusFilter(event.target.value)}
+  >
+    <option value="all">All issues</option>
+    <option value="open">Open</option>
+    <option value="under_review">Under Review</option>
+    <option value="resolved">Resolved</option>
+    <option value="rejected">Rejected</option>
+  </select>
+
+  <button
+    type="button"
+    className="header-button"
+    onClick={fetchAdminIssues}
+    disabled={adminIssuesLoading}
+  >
+    {adminIssuesLoading ? "Refreshing..." : "Refresh"}
+  </button>
+</div>
+
+
+      {adminIssuesError && (
+        <p role="alert">{adminIssuesError}</p>
+      )}
+
+      {adminIssuesLoading ? (
+        <p role="status">Loading reported issues...</p>
+      ) : adminIssues.length === 0 ? (
+        <p>No issues have been reported yet.</p>
+      ) : adminIssues.filter(
+          (issue) =>
+            adminStatusFilter === "all" ||
+            issue.status === adminStatusFilter
+        ).length === 0 ? (
+        <p>No issues match the selected status.</p>
+      ) : (
+        <div className="document-modal-list">
+          {adminIssues
+  .filter(
+    (issue) =>
+      adminStatusFilter === "all" ||
+      issue.status === adminStatusFilter
+  )
+  .map((issue) => (
+            <article className="my-issue-card" key={issue.id}>
+              <div className="my-issue-heading">
+                <strong>Issue #{issue.id}</strong>
+                <span className={`issue-status status-${issue.status}`}>
+                  {issue.status.replaceAll("_", " ")}
+                </span>
+              </div>
+
+                <button
+                  type="button"
+                  className="header-button"
+                  onClick={() => {
+                    setEditingIssueId(issue.id);
+                    setEditIssueStatus(issue.status);
+                    setEditIssueResponse(issue.admin_response || "");
+                    setAdminIssuesError("");
+                  }}
+                >
+                  Edit issue
+                </button>
+
+{editingIssueId === issue.id && (
+  <div className="admin-issue-editor">
+    <label htmlFor={`issue-status-${issue.id}`}>
+      Status
+    </label>
+
+    <select
+      id={`issue-status-${issue.id}`}
+      value={editIssueStatus}
+      onChange={(event) => setEditIssueStatus(event.target.value)}
+    >
+      <option value="open">Open</option>
+      <option value="under_review">Under Review</option>
+      <option value="resolved">Resolved</option>
+      <option value="rejected">Rejected</option>
+    </select>
+
+    <label htmlFor={`issue-response-${issue.id}`}>
+      Admin response
+    </label>
+
+    <textarea
+      id={`issue-response-${issue.id}`}
+      value={editIssueResponse}
+      onChange={(event) => setEditIssueResponse(event.target.value)}
+      maxLength={5000}
+      rows={3}
+      placeholder="Explain what you found or what action was taken..."
+    />
+
+    <div className="admin-issues-toolbar">
+      <button
+        type="button"
+        className="header-button"
+        disabled={issueUpdateLoading}
+        onClick={() => setEditingIssueId(null)}
+      >
+        Cancel
+      </button>
+
+      <button
+        type="button"
+        className="header-button"
+        disabled={issueUpdateLoading}
+        onClick={() => updateAdminIssue(issue.id)}
+      >
+        {issueUpdateLoading ? "Saving..." : "Save changes"}
+      </button>
+    </div>
+  </div>
+)}
+
+
+              <p className="my-issue-question">{issue.question}</p>
+              <p className="my-issue-category">
+                Category: {issue.category.replaceAll("_", " ")}
+              </p>
+
+              {issue.details && <p>{issue.details}</p>}
+
+              <p className="my-issue-category">
+                Reported by: {issue.reported_by}
+              </p>
+
+              {issue.admin_response && (
+                <div className="my-issue-response">
+                  <strong>Current admin response</strong>
+                  <p>{issue.admin_response}</p>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  </div>
+)}
+
+{showMyIssues && (
+  <div
+    className="document-modal-overlay"
+    onClick={(event) => {
+      if (event.target === event.currentTarget) {
+        setShowMyIssues(false);
+      }
+    }}
+  >
+    <section
+      className="document-modal my-issues-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="my-issues-title"
+    >
+      <div className="document-modal-header">
+        <div>
+          <h2 id="my-issues-title">My Issues</h2>
+          <p>Track your knowledge gap reports</p>
+        </div>
+
+        <button
+          type="button"
+          className="header-button"
+          onClick={() => setShowMyIssues(false)}
+          aria-label="Close My Issues"
+        >
+          ✕
+        </button>
+      </div>
+
+      {myIssuesLoading ? (
+        <p role="status">Loading your issues...</p>
+      ) : myIssuesError ? (
+        <div>
+          <p role="alert">{myIssuesError}</p>
+          <button
+            type="button"
+            className="header-button"
+            onClick={fetchMyIssues}
+          >
+            Try again
+          </button>
+        </div>
+      ) : myIssues.length === 0 ? (
+        <p>You haven't reported any issues yet.</p>
+      ) : (
+        <div className="document-modal-list">
+          {myIssues.map((issue) => (
+            <article className="my-issue-card" key={issue.id}>
+              <div className="my-issue-heading">
+                <strong>Issue #{issue.id}</strong>
+                <span className={`issue-status status-${issue.status}`}>
+                  {issue.status.replace("_", " ")}
+                </span>
+              </div>
+
+              <p className="my-issue-question">{issue.question}</p>
+
+              <p className="my-issue-category">
+                Category: {issue.category.replaceAll("_", " ")}
+              </p>
+
+              {issue.details && (
+                <p className="my-issue-details">{issue.details}</p>
+              )}
+
+              <div className="my-issue-response">
+                <strong>Admin response</strong>
+                <p>
+                  {issue.admin_response ||
+                    "No response yet. The administrator may still be reviewing this issue."}
+                </p>
+              </div>
+
+              <small>
+                Submitted:{" "}
+                {new Date(issue.created_at).toLocaleString()}
+              </small>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  </div>
+)}
+
 
 {showDocumentManager && (
   <div
@@ -935,15 +1503,22 @@ conversations.map((conversation) => (
 
               <span className="document-modal-file-icon">▤</span>
 
-              <span className="document-modal-filename">
-                <strong>{doc.filename}</strong>
-                <small>
-                  {doc.file_type || "Document"}
-                  {doc.uploaded_at
-                    ? ` · ${new Date(doc.uploaded_at).toLocaleDateString()}`
-                    : ""}
-                </small>
-              </span>
+              
+                <span className="document-modal-filename">
+                  <strong>{doc.filename}</strong>
+                  <small>
+                    {doc.file_type || "Document"}
+                    {doc.uploaded_at
+                      ? ` · ${new Date(doc.uploaded_at).toLocaleDateString()}`
+                      : ""}
+                  </small>
+                  <small>
+                      {doc.owner_id == null
+                        ? "Legacy document · Uploader unknown"
+                        : `Uploaded by: ${doc.uploaded_by || "Unknown"}`}
+                    </small>
+                </span>
+
 
               <button
                 type="button"
@@ -1119,6 +1694,32 @@ conversations.map((conversation) => (
                   {message.content}
                 </ReactMarkdown>
               </div>
+              {message.role === "assistant" &&
+                !message.error &&
+                message.hasSufficientEvidence === false &&
+                  messages
+                    .slice(0, index)
+                    .some((item) => item.role === "user") && (
+                    <button
+                      type="button"
+                      className="report-issue-button"
+                      onClick={() => {
+                        const previousUserMessage = messages
+                          .slice(0, index)
+                          .reverse()
+                          .find((item) => item.role === "user");
+
+                        if (previousUserMessage) {
+                          setIssueQuestion(previousUserMessage.content);
+                          setIssueDetails("");
+                          setIssueCategory("missing_information");
+                          setIssueModalOpen(true);
+                        }
+                      }}
+                    >
+                      <span aria-hidden="true">⚑</span> Report an issue
+                    </button>
+                )}
 
               {message.role === "assistant" && message.sources?.length > 0 && (
                 <div className="sources">
@@ -1143,17 +1744,133 @@ conversations.map((conversation) => (
           </div>
         ))}
 
+        {issueModalOpen && (
+                <div
+                  className="issue-modal-backdrop"
+                  onClick={(event) => {
+                    if (event.target === event.currentTarget && !issueSubmitting) {
+                      setIssueModalOpen(false);
+                      setIssueError("");
+                      setIssueSuccess("");
+                    }
+                  }}
+                >
+                  <section
+                    className="issue-modal"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="issue-modal-title"
+                  >
+                    <h2 id="issue-modal-title">Report a knowledge issue</h2>
+
+                    {issueSuccess ? (
+                      <>
+                        <p role="status">{issueSuccess}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIssueModalOpen(false);
+                            setIssueSuccess("");
+                            setIssueError("");
+                          }}
+                        >
+                          Done
+                        </button>
+                      </>
+                    ) : (
+                      <form onSubmit={submitKnowledgeIssue}>
+                        <label htmlFor="issue-question">Your question</label>
+                        <textarea
+                          id="issue-question"
+                          value={issueQuestion}
+                          onChange={(event) => setIssueQuestion(event.target.value)}
+                          maxLength={5000}
+                          required
+                          rows={3}
+                        />
+
+                        <label htmlFor="issue-category">Reason for reporting</label>
+                        <select
+                          id="issue-category"
+                          value={issueCategory}
+                          onChange={(event) => setIssueCategory(event.target.value)}
+                        >
+                          <option value="missing_information">
+                            Information is missing
+                          </option>
+                          <option value="access_problem">
+                            I cannot access the information
+                          </option>
+                          <option value="incorrect_answer">
+                            The answer may be incorrect
+                          </option>
+                        </select>
+
+                        <label htmlFor="issue-details">
+                          Additional details (optional)
+                        </label>
+                        <textarea
+                          id="issue-details"
+                          value={issueDetails}
+                          onChange={(event) => setIssueDetails(event.target.value)}
+                          maxLength={2000}
+                          rows={3}
+                          placeholder="Tell the administrator what you expected to find..."
+                        />
+
+                        {issueError && (
+                          <p className="login-error" role="alert">
+                            {issueError}
+                          </p>
+                        )}
+
+                        <div className="issue-modal-actions">
+                          <button
+                            type="button"
+                            disabled={issueSubmitting}
+                            onClick={() => {
+                              setIssueModalOpen(false);
+                              setIssueError("");
+                            }}
+                          >
+                            Cancel
+                          </button>
+
+                          <button
+                            type="submit"
+                            disabled={issueSubmitting || !issueQuestion.trim()}
+                          >
+                            {issueSubmitting ? "Submitting..." : "Submit issue"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </section>
+                </div>
+                )}
+
         {loading && (
-          <div className="message-row assistant">
-            <div className="avatar assistant-avatar" aria-label="EKIP assistant">✦</div>
-            <div className="message thinking-message">
-              <div className="thinking">
-                EKIP is thinking
-                <span>.</span><span>.</span><span>.</span>
-              </div>
-            </div>
-          </div>
-        )}
+  <div
+    className="message-row assistant"
+    role="status"
+    aria-live="polite"
+    aria-label="EKIP is generating an answer"
+  >
+    <div
+      className="avatar assistant-avatar"
+      aria-hidden="true"
+    >
+      ✦
+    </div>
+
+    <div className="message thinking-message">
+      <div className="thinking">
+        EKIP is thinking
+        <span>.</span><span>.</span><span>.</span>
+      </div>
+    </div>
+  </div>
+)}
 
         <div ref={messagesEndRef} />
       </main>
@@ -1166,6 +1883,9 @@ conversations.map((conversation) => (
           className="input-area"
           onSubmit={(event) => {
             event.preventDefault();
+
+            if (loading) return;
+
             askQuestion();
           }}
         >
@@ -1183,8 +1903,8 @@ conversations.map((conversation) => (
   </option>
 
   {documents.map((doc) => (
-    <option key={doc.id} value={doc.filename}>
-      {doc.filename}
+    <option key={doc.id} value={doc.id}>
+      {doc.filename} (ID: {doc.id})
     </option>
   ))}
 </select>
