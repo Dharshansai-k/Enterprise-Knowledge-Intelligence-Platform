@@ -1,5 +1,5 @@
 import chromadb
-
+import os
 
 CHROMA_PATH = "../chroma_db"
 
@@ -8,7 +8,6 @@ client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = client.get_or_create_collection(
     name="ekip_documents"
 )
-
 
 def add_chunk(
     chunk_id: str,
@@ -24,7 +23,6 @@ def add_chunk(
     )
 
 
-
 def search_chunks(
     query_embedding: list,
     n_results: int = 5,
@@ -38,11 +36,13 @@ def search_chunks(
             "distances": [[]],
         }
 
-    return collection.query(
+    # Execute semantic search
+    results = collection.query(
         query_embeddings=[query_embedding],
         n_results=n_results,
         where={"document_id": {"$in": allowed_document_ids}},
     )
+    return results
 
 
 def delete_document_chunks(document_id: int):

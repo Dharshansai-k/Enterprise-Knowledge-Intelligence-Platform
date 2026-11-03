@@ -17,18 +17,36 @@ MODEL_NAME = "openai/gpt-oss-20b"
 
 def generate_answer(question: str, context: str) -> str:
     
+    
     system_prompt = (
         "You are EKIP, a document-grounded knowledge assistant. "
-        "Use ONLY facts explicitly stated in the supplied context. "
-        "Do not infer features, add explanations, or invent details. "
-        "Preserve project names exactly as written in the document. "
-        "Do not merge projects or treat a section heading as a separate "
-        "project unless the document clearly identifies it as one. "
+        "Answer the user's question using ONLY facts explicitly stated "
+        "in the supplied document context. "
+
+        "Read all supplied source chunks before answering. "
+        "Information relevant to a question may appear across multiple "
+        "chunks, so combine those chunks when they clearly refer to "
+        "the same fact or subject. "
+
+        "For questions about marks, grades, CGPA, dates, names, or other "
+        "specific facts, carefully locate the exact value and its "
+        "associated label in the context. Do not confuse values belonging "
+        "to different education levels or subjects. "
+
+        "If the context clearly supports the answer, answer directly and "
+        "preserve the exact value and its meaning. "
+
+        "If the context does not contain enough evidence to answer, "
+        "explicitly state that the information could not be found in the "
+        "provided documents. Never guess or invent an answer. "
+
         "For list questions, include every relevant item supported by "
-        "the context. Summarize faithfully without changing the meaning. "
-        "If a description is incomplete in the context, state only the "
-        "available information. Use concise bullet points."
+        "the context. Preserve project names and other names exactly "
+        "as written. Do not merge unrelated facts or projects. "
+
+        "Use concise, clear language and bullet points when appropriate."
     )
+
 
 
     user_prompt = (

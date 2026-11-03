@@ -25,14 +25,31 @@ from conversation_service import (
     save_message,
     list_messages,
 )
-
+import uuid
 
 class QuestionRequest(BaseModel):
     question: str
     filename: str | None = None
+    document_id: int | None = None
 
 
+class KnowledgeIssueCreateRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=5000)
+    category: str = Field(
+        default="missing_information",
+        pattern="^(missing_information|access_problem|incorrect_answer)$"
+    )
+    details: str | None = Field(default=None, max_length=2000)
 
+
+class KnowledgeIssueUpdateRequest(BaseModel):
+    status: str = Field(
+        pattern="^(open|under_review|resolved|rejected)$"
+    )
+    admin_response: str | None = Field(
+        default=None,
+        max_length=5000
+    )
 
 
 app = FastAPI(title="EKIP API")
@@ -204,7 +221,8 @@ async def upload_document(
             detail="Only PDF and TXT files are supported.",
         )
 
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    unique_filename = f"{uuid.uuid4().hex}_{filename}"
+    file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
     try:
         with open(file_path, "wb") as buffer:
@@ -341,19 +359,27 @@ def list_documents(
     cursor = conn.cursor()
 
     try:
+        
         cursor.execute(
             """
-            SELECT id, filename, file_type, uploaded_at
-            FROM documents
-            WHERE owner_id = %s
-            ORDER BY uploaded_at DESC, id DESC;
-            """,
-            (current_user["id"],),
+            SELECT
+                d.id,
+                d.filename,
+                d.file_type,
+                d.uploaded_at,
+                d.owner_id,
+                u.full_name AS uploaded_by
+            FROM documents d
+            LEFT JOIN users u ON d.owner_id = u.id
+            ORDER BY d.uploaded_at DESC, d.id DESC;
+            """
         )
+
 
         rows = cursor.fetchall()
 
         return {
+            
             "documents": [
                 {
                     "id": row[0],
@@ -362,15 +388,17 @@ def list_documents(
                     "uploaded_at": (
                         row[3].isoformat() if row[3] else None
                     ),
+                    "owner_id": row[4],
+                    "uploaded_by": row[5] or "Unknown",
                 }
                 for row in rows
             ]
+
         }
 
     finally:
         cursor.close()
         conn.close()
-
 
 
 @app.delete("/documents/{document_id}")
@@ -382,14 +410,25 @@ def delete_document(
     cursor = conn.cursor()
 
     try:
-        cursor.execute(
-            """
-            SELECT filename, file_path
-            FROM documents
-            WHERE id = %s AND owner_id = %s;
-            """,
-            (document_id, current_user["id"]),
-        )
+        if current_user["role"] == "admin":
+            cursor.execute(
+                """
+                SELECT filename, file_path
+                FROM documents
+                WHERE id = %s;
+                """,
+                (document_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT filename, file_path
+                FROM documents
+                WHERE id = %s AND owner_id = %s;
+                """,
+                (document_id, current_user["id"]),
+            )
+
         document = cursor.fetchone()
 
         if not document:
@@ -400,7 +439,7 @@ def delete_document(
 
         filename, file_path = document
 
-        # Remove vectors before deleting the database records.
+        # Remove vectors before deleting database records.
         delete_document_chunks(document_id)
 
         cursor.execute(
@@ -408,13 +447,19 @@ def delete_document(
             (document_id,),
         )
 
-        cursor.execute(
-            """
-            DELETE FROM documents
-            WHERE id = %s AND owner_id = %s;
-            """,
-            (document_id, current_user["id"]),
-        )
+        if current_user["role"] == "admin":
+            cursor.execute(
+                "DELETE FROM documents WHERE id = %s;",
+                (document_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                DELETE FROM documents
+                WHERE id = %s AND owner_id = %s;
+                """,
+                (document_id, current_user["id"]),
+            )
 
         conn.commit()
 
@@ -426,7 +471,7 @@ def delete_document(
         cursor.close()
         conn.close()
 
-    # Remove the uploaded file after successful database deletion.
+    # Remove the physical file after successful database deletion.
     if file_path and os.path.isfile(file_path):
         try:
             os.remove(file_path)
@@ -438,7 +483,6 @@ def delete_document(
         "document_id": document_id,
         "filename": filename,
     }
-
 
 @app.get("/health")
 def health_check():
@@ -477,15 +521,192 @@ def ask(
         n_results=5,
         user_id=current_user["id"],
         filename=request.filename,
+        document_id=request.document_id,
     )
 
     return {
         "question": request.question,
         "answer": result["answer"],
         "sources": result["sources"],
-        "context": result["context"]
+        "context": result["context"],
+        "has_sufficient_evidence": result["has_sufficient_evidence"],
     }
 
+
+@app.post("/issues", status_code=201)
+def create_knowledge_issue(
+    request: KnowledgeIssueCreateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    question = request.question.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=400,
+            detail="Question cannot be empty.",
+        )
+
+    details = request.details.strip() if request.details else None
+
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO knowledge_issues
+                (user_id, question, category, details)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, question, category, details,
+                      status, created_at;
+            """,
+            (
+                current_user["id"],
+                question,
+                request.category,
+                details,
+            ),
+        ).fetchone()
+
+    return {
+        "message": "Issue submitted successfully.",
+        "issue": {
+            "id": row[0],
+            "question": row[1],
+            "category": row[2],
+            "details": row[3],
+            "status": row[4],
+            "created_at": row[5].isoformat(),
+        },
+    }
+
+@app.get("/issues")
+def list_my_knowledge_issues(
+    current_user: dict = Depends(get_current_user),
+):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                question,
+                category,
+                details,
+                status,
+                admin_response,
+                created_at,
+                updated_at
+            FROM knowledge_issues
+            WHERE user_id = %s
+            ORDER BY created_at DESC;
+            """,
+            (current_user["id"],),
+        ).fetchall()
+
+    return {
+        "issues": [
+            {
+                "id": row[0],
+                "question": row[1],
+                "category": row[2],
+                "details": row[3],
+                "status": row[4],
+                "admin_response": row[5],
+                "created_at": row[6].isoformat(),
+                "updated_at": row[7].isoformat(),
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@app.get("/admin/issues")
+def list_knowledge_issues(
+    current_user: dict = Depends(require_role("admin")),
+):
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                ki.id,
+                ki.question,
+                ki.category,
+                ki.details,
+                ki.status,
+                ki.admin_response,
+                ki.created_at,
+                ki.updated_at,
+                u.email
+            FROM knowledge_issues ki
+            JOIN users u ON u.id = ki.user_id
+            ORDER BY ki.created_at DESC;
+            """
+        ).fetchall()
+
+    return {
+        "issues": [
+            {
+                "id": row[0],
+                "question": row[1],
+                "category": row[2],
+                "details": row[3],
+                "status": row[4],
+                "admin_response": row[5],
+                "created_at": row[6].isoformat(),
+                "updated_at": row[7].isoformat(),
+                "reported_by": row[8],
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@app.patch("/admin/issues/{issue_id}")
+def update_knowledge_issue(
+    issue_id: int,
+    request: KnowledgeIssueUpdateRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
+    admin_response = (
+        request.admin_response.strip()
+        if request.admin_response
+        else None
+    )
+
+    with get_db_connection() as conn:
+        row = conn.execute(
+            """
+            UPDATE knowledge_issues
+            SET status = %s,
+                admin_response = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, question, category, status,
+                      admin_response, updated_at;
+            """,
+            (
+                request.status,
+                admin_response,
+                issue_id,
+            ),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Knowledge issue not found.",
+        )
+
+    return {
+        "message": "Knowledge issue updated successfully.",
+        "issue": {
+            "id": row[0],
+            "question": row[1],
+            "category": row[2],
+            "status": row[3],
+            "admin_response": row[4],
+            "updated_at": row[5].isoformat(),
+        },
+    }
 
 
 class ConversationCreateRequest(BaseModel):
