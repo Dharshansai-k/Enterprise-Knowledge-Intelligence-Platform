@@ -16,6 +16,14 @@ function App() {
   const [password, setPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerError, setRegisterError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
 
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
@@ -95,6 +103,7 @@ function App() {
 
     setLoginLoading(true);
     setLoginError("");
+    setAuthMessage("");
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/login`, {
@@ -126,6 +135,73 @@ function App() {
     } finally {
       setLoginLoading(false);
     }
+  };
+
+  const register = async (event) => {
+    event.preventDefault();
+    if (registerLoading) return;
+
+    setRegisterError("");
+    setAuthMessage("");
+
+    const cleanName = fullName.trim();
+    if (cleanName.length < 2) {
+      setRegisterError("Full name must contain at least 2 characters.");
+      return;
+    }
+    if (password.length < 8) {
+      setRegisterError("Password must contain at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setRegisterError("Passwords do not match.");
+      return;
+    }
+
+    setRegisterLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name: cleanName,
+          email: email.trim(),
+          password,
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = typeof data.detail === "string"
+          ? data.detail
+          : "Registration failed. Please check your details and try again.";
+        throw new Error(message);
+      }
+
+      setIsRegistering(false);
+      setFullName("");
+      setPassword("");
+      setConfirmPassword("");
+      setRegisterError("");
+      setAuthMessage("Account created successfully. Please sign in.");
+    } catch (error) {
+      setRegisterError(
+        error instanceof TypeError
+          ? "Unable to connect to EKIP. Please try again."
+          : error.message || "Registration failed. Please try again."
+      );
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  const switchAuthMode = () => {
+    setIsRegistering((current) => !current);
+    setLoginError("");
+    setRegisterError("");
+    setAuthMessage("");
+    setPassword("");
+    setConfirmPassword("");
   };
 
   const logout = () => {
@@ -717,7 +793,7 @@ const uploadDocument = async (event) => {
       : [];
 
     setDocuments(documentList);
-    setSelectedDocument(file.name);
+    setSelectedDocument(String(data.document_id));
   } catch (error) {
     setUploadError(error.message || "Unable to upload the document.");
   } finally {
@@ -736,6 +812,7 @@ const deleteDocument = async (doc) => {
 
   setUploadError("");
   setUploadMessage("");
+  setDeletingDocuments(true);
 
   try {
     const response = await fetch(
@@ -760,16 +837,21 @@ const deleteDocument = async (doc) => {
     }
 
     setDocuments((previous) =>
-      previous.filter((item) => item.id !== doc.id)
+      previous.filter((item) => String(item.id) !== String(doc.id))
     );
 
     setSelectedDocument((current) =>
-      current === doc.filename ? "" : current
+      String(current) === String(doc.id) ? "" : current
+    );
+    setSelectedDocumentIds((previous) =>
+      previous.filter((id) => String(id) !== String(doc.id))
     );
 
     setUploadMessage(`${doc.filename} deleted successfully.`);
   } catch (error) {
     setUploadError(error.message || "Unable to delete document.");
+  } finally {
+    setDeletingDocuments(false);
   }
 };
 
@@ -937,10 +1019,31 @@ const askQuestion = async (overrideQuestion) => {
         </header>
 
         <main className="login-container">
-          <form className="login-form" onSubmit={login}>
+          <form className="login-form" onSubmit={isRegistering ? register : login}>
             <div className="login-icon" aria-hidden="true">✦</div>
-            <h2>Welcome back</h2>
-            <p>Sign in to explore your enterprise knowledge.</p>
+            <h2>{isRegistering ? "Create your account" : "Welcome back"}</h2>
+            <p>
+              {isRegistering
+                ? "Create an EKIP account to access your enterprise knowledge."
+                : "Sign in to explore your enterprise knowledge."}
+            </p>
+
+            {isRegistering && (
+              <>
+                <label htmlFor="fullName">Full name</label>
+                <input
+                  id="fullName"
+                  type="text"
+                  value={fullName}
+                  onChange={(event) => setFullName(event.target.value)}
+                  placeholder="Enter your full name"
+                  autoComplete="name"
+                  minLength={2}
+                  maxLength={100}
+                  required
+                />
+              </>
+            )}
 
             <label htmlFor="email">Email address</label>
             <input
@@ -949,32 +1052,89 @@ const askQuestion = async (overrideQuestion) => {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
-              autoComplete="username"
+              autoComplete="email"
               required
             />
 
             <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Enter your password"
-              autoComplete="current-password"
-              required
-            />
+            <div className="password-input-wrap">
+              <input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={isRegistering ? "At least 8 characters" : "Enter your password"}
+                autoComplete={isRegistering ? "new-password" : "current-password"}
+                minLength={isRegistering ? 8 : 1}
+                maxLength={128}
+                required
+              />
+              <button
+                className="password-toggle"
+                type="button"
+                onClick={() => setShowPassword((visible) => !visible)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? "🙈" : "👁️"}
+              </button>
+            </div>
 
-            {loginError && (
-              <p className="login-error" role="alert">{loginError}</p>
+            {isRegistering && (
+              <>
+                <label htmlFor="confirmPassword">Confirm password</label>
+                <div className="password-input-wrap">
+                  <input
+                    id="confirmPassword"
+                    type={showConfirmPassword ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    placeholder="Re-enter your password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    maxLength={128}
+                    required
+                  />
+                  <button
+                    className="password-toggle"
+                    type="button"
+                    onClick={() => setShowConfirmPassword((visible) => !visible)}
+                    aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                    title={showConfirmPassword ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmPassword ? "🙈" : "👁️"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {authMessage && (
+              <p className="auth-success" role="status">{authMessage}</p>
+            )}
+            {(isRegistering ? registerError : loginError) && (
+              <p className="login-error" role="alert">
+                {isRegistering ? registerError : loginError}
+              </p>
             )}
 
             <button
               className="login-button"
               type="submit"
-              disabled={loginLoading || !email.trim() || !password}
+              disabled={isRegistering
+                ? registerLoading || !fullName.trim() || !email.trim() || !password || !confirmPassword
+                : loginLoading || !email.trim() || !password}
             >
-              {loginLoading ? "Signing in..." : "Sign in"}
+              {isRegistering
+                ? (registerLoading ? "Creating account..." : "Create account")
+                : (loginLoading ? "Signing in..." : "Sign in")}
             </button>
+
+            <p className="auth-switch">
+              {isRegistering ? "Already have an account?" : "New to EKIP?"}
+              <button type="button" onClick={switchAuthMode}>
+                {isRegistering ? "Sign in" : "Create an account"}
+              </button>
+            </p>
           </form>
         </main>
       </div>
@@ -1488,37 +1648,38 @@ filteredConversations.map((conversation) => (
           <p>No documents uploaded yet.</p>
         ) : (
           documents.map((doc) => (
-            <label className="document-modal-item" key={doc.id}>
+            <div className="document-modal-item" key={doc.id}>
               <input
+                id={`document-select-${doc.id}`}
                 type="checkbox"
-                checked={selectedDocumentIds.includes(doc.id)}
+                checked={selectedDocumentIds.some(
+                  (id) => String(id) === String(doc.id)
+                )}
                 onChange={(event) => {
                   setSelectedDocumentIds((previous) =>
                     event.target.checked
                       ? [...previous, doc.id]
-                      : previous.filter((id) => id !== doc.id)
+                      : previous.filter((id) => String(id) !== String(doc.id))
                   );
                 }}
               />
 
               <span className="document-modal-file-icon">▤</span>
 
-              
-                <span className="document-modal-filename">
-                  <strong>{doc.filename}</strong>
-                  <small>
-                    {doc.file_type || "Document"}
-                    {doc.uploaded_at
-                      ? ` · ${new Date(doc.uploaded_at).toLocaleDateString()}`
-                      : ""}
-                  </small>
-                  <small>
-                      {doc.owner_id == null
-                        ? "Legacy document · Uploader unknown"
-                        : `Uploaded by: ${doc.uploaded_by || "Unknown"}`}
-                    </small>
-                </span>
-
+              <span className="document-modal-filename">
+                <strong>{doc.filename}</strong>
+                <small>
+                  {doc.file_type || "Document"}
+                  {doc.uploaded_at
+                    ? ` · ${new Date(doc.uploaded_at).toLocaleDateString()}`
+                    : ""}
+                </small>
+                <small>
+                  {doc.owner_id == null
+                    ? "Legacy document · Uploader unknown"
+                    : `Uploaded by: ${doc.uploaded_by || "Unknown"}`}
+                </small>
+              </span>
 
               <button
                 type="button"
@@ -1528,7 +1689,7 @@ filteredConversations.map((conversation) => (
               >
                 Delete
               </button>
-            </label>
+            </div>
           ))
         )}
       </div>

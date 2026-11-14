@@ -1365,7 +1365,6 @@ body {
   gap: 12px;
   padding: 13px 0;
   border-bottom: 1px solid var(--border-color, #383844);
-  cursor: pointer;
 }
 
 .document-modal-item input {
@@ -1952,4 +1951,86 @@ body {
 .admin-issue-editor select option:checked {
   background-color: #5541a8;
   color: #ffffff;
+}
+
+/* Authentication mode switch and registration feedback */
+.auth-switch {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 0 !important;
+  color: #777381;
+  font-size: 13px;
+}
+
+.auth-switch button {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auth-switch button:hover {
+  text-decoration: underline;
+}
+
+.auth-success {
+  margin: 2px 0;
+  padding: 11px 13px;
+  border: 1px solid #bbf7d0;
+  border-radius: 9px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+:root[data-theme="dark"] .auth-switch {
+  color: #b7b0c4;
+}
+
+:root[data-theme="dark"] .auth-success {
+  border-color: #285c3b;
+  background: #14251b;
+  color: #bbf7d0;
+}
+
+
+/* Password visibility toggle */
+.password-input-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.password-input-wrap input {
+  padding-right: 48px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.password-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 5px;
 }
