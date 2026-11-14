@@ -44,7 +44,7 @@ def generate_answer(question: str, context: str) -> str:
         "the context. Preserve project names and other names exactly "
         "as written. Do not merge unrelated facts or projects. "
 
-        "Use concise, clear language and bullet points when appropriate."
+        "For each factual claim, cite the supporting context using its exact label, ""for example [Source 1] or [Source 2]. If multiple sources support a claim, ""cite each relevant source. Never cite a source that does not support the claim. ""Use concise, clear language and bullet points when appropriate."
     )
 
 
@@ -54,23 +54,35 @@ def generate_answer(question: str, context: str) -> str:
         f"Question:\n{question}"
     )
 
+    
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        max_completion_tokens=2048,
+        max_completion_tokens=4096,
         temperature=0.2,
+        reasoning_effort="low",
     )
 
-    message = response.choices[0].message
+    choice = response.choices[0]
+    message = choice.message
     answer = (message.content or "").strip()
+
+    # Temporary debugging
+    print("\n--- GROQ DEBUG ---")
+    print("Model:", MODEL_NAME)
+    print("Finish reason:", choice.finish_reason)
+    print("Usage:", response.usage)
+    print("Reasoning:", getattr(message, "reasoning", None))
+    print("Answer:", answer)
+    print("--- END GROQ DEBUG ---\n")
 
     if not answer:
         raise RuntimeError(
             "The LLM returned an empty answer. "
-            f"Finish reason: {response.choices[0].finish_reason}"
+            f"Finish reason: {choice.finish_reason}"
         )
 
     return answer

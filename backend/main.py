@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from document_parser import extract_text
 from chunker import chunk_text
 from rag_service import ask_question
+from document_intelligence_service import analyze_document
 from pydantic import BaseModel, EmailStr, Field
 from psycopg.errors import UniqueViolation
 from auth_service import authenticate_user, create_access_token, register_user
@@ -401,6 +402,51 @@ def list_documents(
         conn.close()
 
 
+@app.get("/documents/{document_id}/intelligence")
+def get_document_intelligence(
+    document_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate a document-level overview for any document visible in EKIP."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT filename, file_path FROM documents WHERE id = %s;",
+            (document_id,),
+        )
+        document = cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    filename, file_path = document
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(
+            status_code=404,
+            detail="The original document file is unavailable for analysis.",
+        )
+
+    try:
+        text = extract_text(file_path, None)
+        return {
+            "document_id": document_id,
+            **analyze_document(filename, file_path, text),
+        }
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    except Exception as error:
+        print(f"Document intelligence failed for document {document_id}: {error}")
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to generate document insights. Please try again.",
+        )
+
+
 @app.delete("/documents/{document_id}")
 def delete_document(
     document_id: int,
@@ -504,17 +550,16 @@ def db_test():
         "status": "connected"
     }
 
-
 @app.post("/ask")
 def ask(
     request: QuestionRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    if not request.question.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Question cannot be empty"
-        )
+    print("\n--- ASK API DEBUG ---")
+    print("Authenticated user ID:", current_user.get("id"))
+    print("Question:", request.question)
+    print("Filename:", request.filename)
+    print("Document ID:", request.document_id)
 
     result = ask_question(
         question=request.question,
@@ -524,14 +569,18 @@ def ask(
         document_id=request.document_id,
     )
 
+    print("Retrieved sources:", len(result["sources"]))
+    print("Context length:", len(result["context"]))
+    print("--- END ASK API DEBUG ---\n")
+
     return {
         "question": request.question,
         "answer": result["answer"],
         "sources": result["sources"],
+        "documents_used": result["documents_used"],
         "context": result["context"],
         "has_sufficient_evidence": result["has_sufficient_evidence"],
     }
-
 
 @app.post("/issues", status_code=201)
 def create_knowledge_issue(

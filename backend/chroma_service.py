@@ -1,10 +1,10 @@
 import chromadb
 import os
 
-CHROMA_PATH = "../chroma_db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHROMA_PATH = os.path.join(BASE_DIR, "chroma_db")
 
 client = chromadb.PersistentClient(path=CHROMA_PATH)
-
 collection = client.get_or_create_collection(
     name="ekip_documents"
 )
@@ -35,7 +35,13 @@ def search_chunks(
             "ids": [[]],
             "distances": [[]],
         }
-
+    print("\n--- CHROMA DEBUG ---")
+    print("Chroma path:", CHROMA_PATH)
+    print("Collection:", collection.name)
+    print("Collection count:", collection.count())
+    print("Allowed IDs:", allowed_document_ids)
+    print("Requested results:", n_results)
+    print("--- END CHROMA DEBUG ---\n")
     # Execute semantic search
     results = collection.query(
         query_embeddings=[query_embedding],
