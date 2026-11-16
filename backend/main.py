@@ -25,6 +25,7 @@ from conversation_service import (
     get_conversation,
     save_message,
     list_messages,
+    get_recent_messages,
 )
 import uuid
 
@@ -32,6 +33,7 @@ class QuestionRequest(BaseModel):
     question: str
     filename: str | None = None
     document_id: int | None = None
+    conversation_id: int | None = None
 
 
 class KnowledgeIssueCreateRequest(BaseModel):
@@ -550,27 +552,52 @@ def db_test():
         "status": "connected"
     }
 
+
 @app.post("/ask")
 def ask(
     request: QuestionRequest,
     current_user: dict = Depends(get_current_user),
 ):
+    user_id = current_user["id"]
+
     print("\n--- ASK API DEBUG ---")
-    print("Authenticated user ID:", current_user.get("id"))
+    print("Authenticated user ID:", user_id)
     print("Question:", request.question)
-    print("Filename:", request.filename)
-    print("Document ID:", request.document_id)
+    print("Conversation ID:", request.conversation_id)
+
+    conversation_history = []
+
+    # Validate conversation ownership before accessing its history.
+    if request.conversation_id is not None:
+        conversation = get_conversation(
+            user_id=user_id,
+            conversation_id=request.conversation_id,
+        )
+
+        if not conversation:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            )
+
+        conversation_history = get_recent_messages(
+            user_id=user_id,
+            conversation_id=request.conversation_id,
+            limit=6,
+        )
 
     result = ask_question(
         question=request.question,
         n_results=5,
-        user_id=current_user["id"],
+        user_id=user_id,
         filename=request.filename,
         document_id=request.document_id,
+        conversation_history=conversation_history,
     )
 
     print("Retrieved sources:", len(result["sources"]))
     print("Context length:", len(result["context"]))
+    print("History messages:", len(conversation_history))
     print("--- END ASK API DEBUG ---\n")
 
     return {
@@ -580,6 +607,7 @@ def ask(
         "documents_used": result["documents_used"],
         "context": result["context"],
         "has_sufficient_evidence": result["has_sufficient_evidence"],
+        "suggested_questions": result["suggested_questions"],
     }
 
 @app.post("/issues", status_code=201)

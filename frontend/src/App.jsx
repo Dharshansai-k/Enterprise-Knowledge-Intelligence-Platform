@@ -36,6 +36,10 @@ function App() {
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
   const [showDocumentManager, setShowDocumentManager] = useState(false);
+  const [intelligenceDocument, setIntelligenceDocument] = useState(null);
+  const [intelligenceData, setIntelligenceData] = useState(null);
+  const [intelligenceLoading, setIntelligenceLoading] = useState(false);
+  const [intelligenceError, setIntelligenceError] = useState("");
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [deletingDocuments, setDeletingDocuments] = useState(false);
   const [conversations, setConversations] = useState([]);
@@ -803,6 +807,43 @@ const uploadDocument = async (event) => {
 };
 
 
+const analyzeDocument = async (doc) => {
+  setIntelligenceDocument(doc);
+  setIntelligenceData(null);
+  setIntelligenceError("");
+  setIntelligenceLoading(true);
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/documents/${doc.id}/intelligence`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.status === 401) {
+      logout();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.detail || "Unable to analyze this document.");
+    }
+
+    setIntelligenceData(data);
+  } catch (error) {
+    setIntelligenceError(error.message || "Unable to connect to EKIP.");
+  } finally {
+    setIntelligenceLoading(false);
+  }
+};
+
+
 const deleteDocument = async (doc) => {
   const confirmed = window.confirm(
     `Are you sure you want to delete "${doc.filename}"? This cannot be undone.`
@@ -912,6 +953,7 @@ const askQuestion = async (overrideQuestion) => {
         document_id: selectedDocument
           ? Number(selectedDocument)
           : null,
+          conversation_id: conversationId,
       }),
     });
 
@@ -929,17 +971,23 @@ const askQuestion = async (overrideQuestion) => {
 
     const answer = data.answer || "No answer was returned.";
     const sources = data.sources || [];
+    const suggestedQuestions = Array.isArray(data.suggested_questions)
+      ? data.suggested_questions.filter(
+          (item) => typeof item === "string" && item.trim()
+        ).slice(0, 3)
+      : [];
 
-    // Display the answer and sources.
-    setMessages(previous => [
-  ...previous,
-  {
-    role: "assistant",
-    content: answer,
-    sources,
-    hasSufficientEvidence: data.has_sufficient_evidence,
-  },
-]);
+    // Display the answer, sources, and suggested follow-up questions.
+    setMessages((previous) => [
+      ...previous,
+      {
+        role: "assistant",
+        content: answer,
+        sources,
+        suggestedQuestions,
+        hasSufficientEvidence: data.has_sufficient_evidence,
+      },
+    ]);
 
 
 
@@ -1683,6 +1731,15 @@ filteredConversations.map((conversation) => (
 
               <button
                 type="button"
+                className="header-button document-analyze-button"
+                disabled={intelligenceLoading}
+                onClick={() => analyzeDocument(doc)}
+              >
+                Analyze
+              </button>
+
+              <button
+                type="button"
                 className="header-button document-delete-button"
                 disabled={deletingDocuments}
                 onClick={() => deleteDocument(doc)}
@@ -1693,6 +1750,139 @@ filteredConversations.map((conversation) => (
           ))
         )}
       </div>
+
+      {intelligenceDocument && (
+        <section className="document-intelligence-panel" aria-live="polite">
+          <div className="document-intelligence-heading">
+            <div>
+              <h3>Document Intelligence</h3>
+              <p>{intelligenceDocument.filename}</p>
+            </div>
+            <button
+              type="button"
+              className="header-button"
+              onClick={() => {
+                setIntelligenceDocument(null);
+                setIntelligenceData(null);
+                setIntelligenceError("");
+              }}
+            >
+              Close insights
+            </button>
+          </div>
+
+          {intelligenceLoading ? (
+            <p role="status">Analyzing document with AI. This may take a moment...</p>
+          ) : intelligenceError ? (
+            <p className="document-intelligence-error" role="alert">
+              {intelligenceError}
+            </p>
+          ) : intelligenceData ? (
+            <div className="insights-dashboard">
+              <div className="insights-overview">
+                <div className="insights-overview-copy">
+                  <span className="insights-eyebrow">AI DOCUMENT REPORT</span>
+                  <h4>At a glance</h4>
+                  <p>A structured overview of the document's content and composition.</p>
+                </div>
+                <div className="insights-stats-grid">
+                  <div className="insight-stat">
+                    <span className="insight-stat-icon" aria-hidden="true">▤</span>
+                    <strong>{intelligenceData.page_count ?? "—"}</strong>
+                    <span>Pages</span>
+                  </div>
+                  <div className="insight-stat">
+                    <span className="insight-stat-icon" aria-hidden="true">✎</span>
+                    <strong>{Number(intelligenceData.word_count || 0).toLocaleString()}</strong>
+                    <span>Words</span>
+                  </div>
+                  <div className="insight-stat">
+                    <span className="insight-stat-icon" aria-hidden="true">⌗</span>
+                    <strong>{Number(intelligenceData.character_count || 0).toLocaleString()}</strong>
+                    <span>Characters</span>
+                  </div>
+                  <div className="insight-stat">
+                    <span className="insight-stat-icon" aria-hidden="true">⇩</span>
+                    <strong>{(Number(intelligenceData.file_size_bytes || 0) / 1024).toFixed(1)} <small>KB</small></strong>
+                    <span>File size</span>
+                  </div>
+                </div>
+              </div>
+
+              <section className="insight-content-card insight-summary-card">
+                <div className="insight-card-heading">
+                  <span className="insight-card-icon" aria-hidden="true">✧</span>
+                  <div>
+                    <span className="insights-eyebrow">OVERVIEW</span>
+                    <h4>Executive summary</h4>
+                  </div>
+                </div>
+                <p>{intelligenceData.summary || "No summary was generated."}</p>
+              </section>
+
+              <section className="insight-content-card">
+                <div className="insight-card-heading">
+                  <span className="insight-card-icon" aria-hidden="true">⌘</span>
+                  <div>
+                    <span className="insights-eyebrow">CONTENT MAP</span>
+                    <h4>Key topics</h4>
+                  </div>
+                  <span className="insight-count">{intelligenceData.key_topics?.length || 0}</span>
+                </div>
+                {intelligenceData.key_topics?.length ? (
+                  <div className="document-intelligence-tags">
+                    {intelligenceData.key_topics.map((topic, index) => (
+                      <span key={`${topic}-${index}`}>{topic}</span>
+                    ))}
+                  </div>
+                ) : <p className="insight-empty">No key topics were identified.</p>}
+              </section>
+
+              <section className="insight-content-card">
+                <div className="insight-card-heading">
+                  <span className="insight-card-icon" aria-hidden="true">✓</span>
+                  <div>
+                    <span className="insights-eyebrow">IMPORTANT POINTS</span>
+                    <h4>Key takeaways</h4>
+                  </div>
+                  <span className="insight-count">{intelligenceData.key_takeaways?.length || 0}</span>
+                </div>
+                {intelligenceData.key_takeaways?.length ? (
+                  <ul className="insight-takeaways-list">
+                    {intelligenceData.key_takeaways.map((item, index) => (
+                      <li key={`${index}-${item}`}>
+                        <span className="insight-list-marker">{String(index + 1).padStart(2, "0")}</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="insight-empty">No takeaways were generated.</p>}
+              </section>
+
+              <section className="insight-content-card">
+                <div className="insight-card-heading">
+                  <span className="insight-card-icon" aria-hidden="true">☷</span>
+                  <div>
+                    <span className="insights-eyebrow">DOCUMENT STRUCTURE</span>
+                    <h4>Detected sections</h4>
+                  </div>
+                  <span className="insight-count">{intelligenceData.sections?.length || 0}</span>
+                </div>
+                {intelligenceData.sections?.length ? (
+                  <ol className="insight-sections-list">
+                    {intelligenceData.sections.map((section, index) => (
+                      <li key={`${index}-${section}`}>
+                        <span>{String(index + 1).padStart(2, "0")}</span>
+                        <strong>{section}</strong>
+                      </li>
+                    ))}
+                  </ol>
+                ) : <p className="insight-empty">No clear section headings were detected.</p>}
+              </section>
+            </div>
+          ) : null}
+        </section>
+      )}
 
       <div className="document-modal-footer">
         <button
@@ -1895,6 +2085,31 @@ filteredConversations.map((conversation) => (
                       <span className="source-chunk">Chunk {source.chunk_index}</span>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {message.role === "assistant" && !message.error && message.suggestedQuestions?.length > 0 && (
+                <div className="suggested-questions">
+                  <div className="suggested-questions-heading">
+                    <span aria-hidden="true">✧</span>
+                    <strong>Explore further</strong>
+                    <span className="suggested-questions-caption">Suggested questions</span>
+                  </div>
+                  <div className="suggested-question-list">
+                    {message.suggestedQuestions.map((suggestion, suggestionIndex) => (
+                      <button
+                        type="button"
+                        className="suggested-question-chip"
+                        key={`${suggestionIndex}-${suggestion}`}
+                        onClick={() => askQuestion(suggestion)}
+                        disabled={loading}
+                        title="Ask this follow-up question"
+                      >
+                        <span>{suggestion}</span>
+                        <span className="suggested-question-arrow" aria-hidden="true">↗</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

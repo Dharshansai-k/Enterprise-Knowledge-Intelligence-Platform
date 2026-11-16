@@ -123,3 +123,39 @@ def list_messages(user_id: int, conversation_id: int):
             return cursor.fetchall()
     finally:
         conn.close()
+
+
+
+def get_recent_messages(
+    user_id: int,
+    conversation_id: int,
+    limit: int = 6
+):
+    """
+    Fetch recent messages belonging to a conversation
+    owned by the authenticated user.
+    """
+    conn = get_db_connection()
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """
+                SELECT m.role, m.content
+                FROM chat_messages AS m
+                JOIN conversations AS c
+                    ON c.id = m.conversation_id
+                WHERE c.id = %s
+                  AND c.user_id = %s
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT %s;
+                """,
+                (conversation_id, user_id, limit),
+            )
+
+            messages = cursor.fetchall()
+
+            return list(reversed(messages))
+
+    finally:
+        conn.close()
