@@ -9,3 +9,19 @@ database files
 __pycache__/
 documents/
 chroma_db/
+# EKIP backups
+backups/
+ekip_backend_backup.tar.gz
+backend/ekip_backend_backup.tar.gz
+
+# Generated evaluation results
+backend/*_details.csv
+backend/*_summary.csv
+backend/end_to_end_benchmark_results/
+
+# Generated benchmark output
+backend/evaluation_results.csv
+backend/retrieval_comparison.csv
+backend/retrieval_comparison_*.csv
+backend/hybrid_retrieval_*.csv
+backend/cross_encoder_evaluation_results.csv

@@ -794,6 +794,7 @@ class MessageCreateRequest(BaseModel):
     role: str
     content: str = Field(min_length=1)
     sources: list[dict] = Field(default_factory=list)
+    suggested_questions: list[str] = Field(default_factory=list)
 
 
 @app.post("/conversations", status_code=201)
@@ -878,6 +879,11 @@ def save_conversation_message_route(
         role=request.role,
         content=request.content,
         sources=request.sources if request.role == "assistant" else [],
+        suggested_questions=(
+            request.suggested_questions
+            if request.role == "assistant"
+            else []
+        ),
     )
 
     # Set the title from the first user question.

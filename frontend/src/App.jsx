@@ -334,6 +334,7 @@ const openConversation = async (conversationId) => {
         role: message.role,
         content: message.content,
         sources: message.sources || [],
+        suggestedQuestions: message.suggested_questions || [],
       }))
     );
 
@@ -633,7 +634,8 @@ const saveConversationMessage = async (
   conversationId,
   role,
   content,
-  sources = []
+  sources = [],
+  suggestedQuestions = []
 ) => {
   const response = await fetch(
     `${API_BASE_URL}/conversations/${conversationId}/messages`,
@@ -643,7 +645,12 @@ const saveConversationMessage = async (
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ role, content, sources }),
+      body: JSON.stringify({
+        role,
+        content,
+        sources,
+        suggested_questions: suggestedQuestions,
+      }),
     }
   );
 
@@ -655,72 +662,6 @@ const saveConversationMessage = async (
 
   return data.message;
 };
-
-
-
-useEffect(() => {
-  if (!token) {
-    setDocuments([]);
-    setDocumentsLoading(false);
-    return;
-  }
-
-  const controller = new AbortController();
-
-  const fetchDocuments = async () => {
-    setDocumentsLoading(true);
-    setDocumentsError("");
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/documents`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        signal: controller.signal,
-      });
-
-      if (response.status === 401) {
-        localStorage.removeItem("access_token");
-        setToken("");
-        setSelectedDocument("");
-        return;
-      }
-
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Failed to load documents.");
-      }
-
-      const documentList = Array.isArray(data.documents)
-        ? data.documents
-        : [];
-
-      setDocuments(documentList);
-
-      setSelectedDocument((current) =>
-        documentList.some((doc) => doc.filename === current)
-          ? current
-          : ""
-      );
-    } catch (error) {
-      if (error.name !== "AbortError") {
-        setDocumentsError(error.message || "Unable to load documents.");
-      }
-    } finally {
-      if (!controller.signal.aborted) {
-        setDocumentsLoading(false);
-      }
-    }
-  };
-
-  fetchDocuments();
-
-  return () => controller.abort();
-}, [token]);
-
-
 
 const uploadDocument = async (event) => {
   const file = event.target.files?.[0];
@@ -997,7 +938,8 @@ const askQuestion = async (overrideQuestion) => {
       conversationId,
       "assistant",
       answer,
-      sources
+      sources,
+      suggestedQuestions
     );
 
     // Refresh the conversation list.

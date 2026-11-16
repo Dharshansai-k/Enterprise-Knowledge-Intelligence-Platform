@@ -59,11 +59,13 @@ def get_conversation(user_id: int, conversation_id: int):
         conn.close()
 
 
+
 def save_message(
     conversation_id: int,
     role: str,
     content: str,
     sources: list | None = None,
+    suggested_questions: list | None = None,
 ):
     if role not in {"user", "assistant"}:
         raise ValueError("Invalid message role.")
@@ -75,15 +77,29 @@ def save_message(
             cursor.execute(
                 """
                 INSERT INTO chat_messages
-                    (conversation_id, role, content, sources)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, conversation_id, role, content, sources, created_at;
+                    (
+                        conversation_id,
+                        role,
+                        content,
+                        sources,
+                        suggested_questions
+                    )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    conversation_id,
+                    role,
+                    content,
+                    sources,
+                    suggested_questions,
+                    created_at;
                 """,
                 (
                     conversation_id,
                     role,
                     content,
                     psycopg.types.json.Jsonb(sources or []),
+                    psycopg.types.json.Jsonb(suggested_questions or []),
                 ),
             )
 
@@ -100,6 +116,7 @@ def save_message(
 
             conn.commit()
             return message
+
     finally:
         conn.close()
 
@@ -111,10 +128,16 @@ def list_messages(user_id: int, conversation_id: int):
         with conn.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
                 """
-                SELECT m.id, m.role, m.content, m.sources, m.created_at
+                SELECT
+                    m.id,
+                    m.role,
+                    m.content,
+                    m.sources,
+                    m.suggested_questions,
+                    m.created_at
                 FROM chat_messages AS m
                 JOIN conversations AS c
-                  ON c.id = m.conversation_id
+                    ON c.id = m.conversation_id
                 WHERE c.id = %s AND c.user_id = %s
                 ORDER BY m.created_at ASC, m.id ASC;
                 """,
