@@ -1,39 +1,31 @@
-import psycopg
+"""Rebuild the Chroma index from PostgreSQL-backed document chunks."""
 
+from database import get_db_connection
 from embedding_service import generate_embedding
 from chroma_service import add_chunk
 
 
-DATABASE_URL = "postgresql://ekip_user:ekip-password@localhost:5432/ekip_db"
-
-
 def index_documents():
-    conn = psycopg.connect(DATABASE_URL)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            dc.id,
-            dc.document_id,
-            dc.chunk_index,
-            dc.content,
-            d.filename
-        FROM document_chunks dc
-        JOIN documents d
-            ON dc.document_id = d.id
-        ORDER BY dc.id;
-    """)
-
-    chunks = cursor.fetchall()
+    with get_db_connection() as conn:
+        chunks = conn.execute(
+            """
+            SELECT
+                dc.id,
+                dc.document_id,
+                dc.chunk_index,
+                dc.content,
+                d.filename
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            ORDER BY dc.id;
+            """
+        ).fetchall()
 
     print(f"Found {len(chunks)} chunks")
 
     for chunk_id, document_id, chunk_index, content, filename in chunks:
-
         print(f"Indexing chunk {chunk_id}...")
-
         embedding = generate_embedding(content)
-
         add_chunk(
             chunk_id=str(chunk_id),
             content=content,
@@ -44,9 +36,6 @@ def index_documents():
                 "filename": filename,
             },
         )
-
-    cursor.close()
-    conn.close()
 
     print("All chunks indexed successfully!")
 
