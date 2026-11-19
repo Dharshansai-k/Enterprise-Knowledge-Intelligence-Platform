@@ -3,7 +3,7 @@ import "./App.css";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
 function App() {
   const [token, setToken] = useState(
@@ -30,8 +30,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState("");
   const [documents, setDocuments] = useState([]);
-  const [documentsLoading, setDocumentsLoading] = useState(false);
-  const [documentsError, setDocumentsError] = useState("");
+  const [documentsLoading] = useState(false);
+  const [documentsError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
@@ -48,6 +48,8 @@ function App() {
   const [renamingConversationId, setRenamingConversationId] = useState(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [conversationSearch, setConversationSearch] = useState("");
+  const [conversationSearchResults, setConversationSearchResults] = useState([]);
+  const [conversationSearchLoading, setConversationSearchLoading] = useState(false);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [issueQuestion, setIssueQuestion] = useState("");
   const [issueCategory, setIssueCategory] = useState("missing_information");
@@ -210,6 +212,12 @@ function App() {
 
   const logout = () => {
     localStorage.removeItem("access_token");
+    setConversations([]);
+    setActiveConversationId(null);
+    setCurrentUser(null);
+    setConversationSearch("");
+    setConversationSearchResults([]);
+    setConversationSearchLoading(false);
     setToken("");
     setEmail("");
     setPassword("");
@@ -348,11 +356,50 @@ const openConversation = async (conversationId) => {
 };
 
 
-const filteredConversations = conversations.filter((conversation) =>
-  (conversation.title || "New conversation")
-    .toLowerCase()
-    .includes(conversationSearch.trim().toLowerCase())
-);
+useEffect(() => {
+  if (!token) return;
+
+  const query = conversationSearch.trim();
+  if (!query) return;
+
+  let cancelled = false;
+  const timer = window.setTimeout(async () => {
+    setConversationSearchLoading(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/conversations/search?q=${encodeURIComponent(query)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        if (!cancelled) logout();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(data.detail || "Unable to search conversations.");
+      }
+      if (!cancelled) {
+        setConversationSearchResults(Array.isArray(data.conversations) ? data.conversations : []);
+      }
+    } catch (error) {
+      if (!cancelled) {
+        console.error("Conversation search error:", error);
+        setConversationSearchResults([]);
+      }
+    } finally {
+      if (!cancelled) setConversationSearchLoading(false);
+    }
+  }, 250);
+
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}, [conversationSearch, token]);
+
+const filteredConversations = conversationSearch.trim()
+  ? conversationSearchResults
+  : conversations;
 
 const renameConversation = async (conversationId) => {
   const title = renameTitle.trim();
@@ -670,11 +717,6 @@ const uploadDocument = async (event) => {
   setUploadError("");
   setUploadMessage("");
 
-  const allowedTypes = [
-    "application/pdf",
-    "text/plain",
-  ];
-
   const hasAllowedExtension = /\.(pdf|txt)$/i.test(file.name);
 
   if (!hasAllowedExtension) {
@@ -839,14 +881,16 @@ const deleteDocument = async (doc) => {
 
 
 useEffect(() => {
-  if (token) {
+  if (!token) return;
+
+  const timer = window.setTimeout(() => {
     fetchConversations();
     fetchCurrentUser();
-  } else {
-    setConversations([]);
-    setActiveConversationId(null);
-    setCurrentUser(null);
-  }
+  }, 0);
+
+  return () => window.clearTimeout(timer);
+  // These functions are component-local and use the current token.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [token]);
 
 
@@ -1151,7 +1195,11 @@ const askQuestion = async (overrideQuestion) => {
             className="conversation-search"
             placeholder="Search conversations..."
             value={conversationSearch}
-            onChange={(event) => setConversationSearch(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              setConversationSearch(value);
+              if (!value.trim()) setConversationSearchLoading(false);
+            }}
             aria-label="Search conversations"
           />
 
@@ -1161,10 +1209,10 @@ const askQuestion = async (overrideQuestion) => {
       </div>
 
       <div className="conversation-list">
-        {historyLoading && filteredConversations.length === 0 ? (
-          <p className="conversation-empty">Loading chats...</p>
+        {(historyLoading || conversationSearchLoading) && filteredConversations.length === 0 ? (
+          <p className="conversation-empty">Searching chats...</p>
         ) : filteredConversations.length === 0 ? (
-          <p className="conversation-empty">No conversations yet</p>
+          <p className="conversation-empty">{conversationSearch.trim() ? "No matching conversations" : "No conversations yet"}</p>
         ) : (
           
 filteredConversations.map((conversation) => (

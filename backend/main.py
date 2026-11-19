@@ -8,12 +8,12 @@ from document_parser import extract_text
 from chunker import chunk_text
 from rag_service import ask_question
 from document_intelligence_service import analyze_document
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from psycopg.errors import UniqueViolation
 from auth_service import authenticate_user, create_access_token, register_user
 import jwt
 from jwt.exceptions import InvalidTokenError
-from fastapi import Depends
+from fastapi import Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth_service import get_user_by_id
 from embedding_service import generate_embedding
@@ -30,10 +30,25 @@ from conversation_service import (
 import uuid
 
 class QuestionRequest(BaseModel):
-    question: str
-    filename: str | None = None
-    document_id: int | None = None
-    conversation_id: int | None = None
+    question: str = Field(min_length=1, max_length=5000)
+    filename: str | None = Field(default=None, max_length=255)
+    document_id: int | None = Field(default=None, gt=0)
+    conversation_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Question cannot be empty.")
+        return value
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("Filename cannot be empty.")
+        return value.strip() if value is not None else value
 
 
 class KnowledgeIssueCreateRequest(BaseModel):
@@ -105,6 +120,14 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
 
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value):
+        value = " ".join(value.split())
+        if len(value) < 2:
+            raise ValueError("Full name must contain at least 2 non-space characters.")
+        return value
+
 #LoginRequest model
 @app.post("/auth/register", status_code=201)
 def register(request: RegisterRequest):
@@ -131,11 +154,18 @@ def register(request: RegisterRequest):
         )
 
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication credentials are required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     secret = os.getenv("JWT_SECRET")
     if not secret:
         raise HTTPException(
@@ -199,7 +229,9 @@ def read_current_user(
     return current_user
 
 
-UPLOAD_DIR = "../documents"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+UPLOAD_DIR = os.path.join(BASE_DIR, "documents")
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
@@ -224,12 +256,26 @@ async def upload_document(
             detail="Only PDF and TXT files are supported.",
         )
 
+    if len(filename) > 255 or filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
     unique_filename = f"{uuid.uuid4().hex}_{filename}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
     try:
+        total_bytes = 0
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while True:
+                block = await file.read(1024 * 1024)
+                if not block:
+                    break
+                total_bytes += len(block)
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File is too large. Maximum upload size is 15 MB.",
+                    )
+                buffer.write(block)
 
         try:
             text = extract_text(file_path, file.content_type)
@@ -487,9 +533,8 @@ def delete_document(
 
         filename, file_path = document
 
-        # Remove vectors before deleting database records.
-        delete_document_chunks(document_id)
-
+        # Delete relational records first. Vector cleanup runs after commit:
+        # ChromaDB is not part of the PostgreSQL transaction.
         cursor.execute(
             "DELETE FROM document_chunks WHERE document_id = %s;",
             (document_id,),
@@ -518,6 +563,14 @@ def delete_document(
     finally:
         cursor.close()
         conn.close()
+
+    # Clean up the vector index after the relational transaction commits.
+    # A failure here cannot roll back PostgreSQL; the stale vectors are harmless
+    # because search scopes results to document IDs still present in PostgreSQL.
+    try:
+        delete_document_chunks(document_id)
+    except Exception:
+        pass
 
     # Remove the physical file after successful database deletion.
     if file_path and os.path.isfile(file_path):
@@ -559,6 +612,8 @@ def ask(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["id"]
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     print("\n--- ASK API DEBUG ---")
     print("Authenticated user ID:", user_id)
@@ -789,12 +844,28 @@ def update_knowledge_issue(
 class ConversationCreateRequest(BaseModel):
     title: str = Field(default="New conversation", min_length=1, max_length=200)
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Title cannot be empty.")
+        return value
+
 
 class MessageCreateRequest(BaseModel):
     role: str
-    content: str = Field(min_length=1)
-    sources: list[dict] = Field(default_factory=list)
-    suggested_questions: list[str] = Field(default_factory=list)
+    content: str = Field(min_length=1, max_length=20000)
+    sources: list[dict] = Field(default_factory=list, max_length=20)
+    suggested_questions: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Message content cannot be empty.")
+        return value
 
 
 @app.post("/conversations", status_code=201)
@@ -810,6 +881,41 @@ def create_conversation_route(
         user_id=current_user["id"],
         title=title,
     )
+
+
+@app.get("/conversations/search")
+def search_conversations_route(
+    q: str = Query(default="", max_length=200),
+    current_user: dict = Depends(get_current_user),
+):
+    """Search a user's conversation titles and message contents."""
+    query = " ".join(q.split())
+    if not query:
+        return {"conversations": list_conversations(current_user["id"])}
+
+    pattern = f"%{query}%"
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at
+            FROM conversations c
+            LEFT JOIN chat_messages m ON m.conversation_id = c.id
+            WHERE c.user_id = %s
+              AND (c.title ILIKE %s OR m.content ILIKE %s)
+            ORDER BY c.updated_at DESC, c.id DESC;
+            """,
+            (current_user["id"], pattern, pattern),
+        ).fetchall()
+
+    return {"conversations": [
+        {
+            "id": row[0],
+            "title": row[1],
+            "created_at": row[2],
+            "updated_at": row[3],
+        }
+        for row in rows
+    ]}
 
 
 @app.get("/conversations")
@@ -913,6 +1019,14 @@ def save_conversation_message_route(
 
 class ConversationRenameRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Title cannot be empty.")
+        return value
 
 
 @app.patch("/conversations/{conversation_id}")
