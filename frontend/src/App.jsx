@@ -1195,7 +1195,11 @@ const askQuestion = async (overrideQuestion) => {
             className="conversation-search"
             placeholder="Search conversations..."
             value={conversationSearch}
-            onChange={(event) => setConversationSearch(event.target.value)}
+            onChange={(event) => {
+              const value = event.target.value;
+              setConversationSearch(value);
+              if (!value.trim()) setConversationSearchLoading(false);
+            }}
             aria-label="Search conversations"
           />
 
