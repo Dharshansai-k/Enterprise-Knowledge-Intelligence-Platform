@@ -8,7 +8,7 @@ from document_parser import extract_text
 from chunker import chunk_text
 from rag_service import ask_question
 from document_intelligence_service import analyze_document
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from psycopg.errors import UniqueViolation
 from auth_service import authenticate_user, create_access_token, register_user
 import jwt
@@ -30,10 +30,25 @@ from conversation_service import (
 import uuid
 
 class QuestionRequest(BaseModel):
-    question: str
-    filename: str | None = None
-    document_id: int | None = None
-    conversation_id: int | None = None
+    question: str = Field(min_length=1, max_length=5000)
+    filename: str | None = Field(default=None, max_length=255)
+    document_id: int | None = Field(default=None, gt=0)
+    conversation_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Question cannot be empty.")
+        return value
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("Filename cannot be empty.")
+        return value.strip() if value is not None else value
 
 
 class KnowledgeIssueCreateRequest(BaseModel):
@@ -104,6 +119,14 @@ class RegisterRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=100)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value):
+        value = " ".join(value.split())
+        if len(value) < 2:
+            raise ValueError("Full name must contain at least 2 non-space characters.")
+        return value
 
 #LoginRequest model
 @app.post("/auth/register", status_code=201)
@@ -199,7 +222,9 @@ def read_current_user(
     return current_user
 
 
-UPLOAD_DIR = "../documents"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+UPLOAD_DIR = os.path.join(BASE_DIR, "documents")
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
@@ -224,12 +249,26 @@ async def upload_document(
             detail="Only PDF and TXT files are supported.",
         )
 
+    if len(filename) > 255 or filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
     unique_filename = f"{uuid.uuid4().hex}_{filename}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
     try:
+        total_bytes = 0
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while True:
+                block = await file.read(1024 * 1024)
+                if not block:
+                    break
+                total_bytes += len(block)
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File is too large. Maximum upload size is 15 MB.",
+                    )
+                buffer.write(block)
 
         try:
             text = extract_text(file_path, file.content_type)
@@ -487,9 +526,8 @@ def delete_document(
 
         filename, file_path = document
 
-        # Remove vectors before deleting database records.
-        delete_document_chunks(document_id)
-
+        # Delete relational records first. Vector cleanup runs after commit:
+        # ChromaDB is not part of the PostgreSQL transaction.
         cursor.execute(
             "DELETE FROM document_chunks WHERE document_id = %s;",
             (document_id,),
@@ -518,6 +556,14 @@ def delete_document(
     finally:
         cursor.close()
         conn.close()
+
+    # Clean up the vector index after the relational transaction commits.
+    # A failure here cannot roll back PostgreSQL; the stale vectors are harmless
+    # because search scopes results to document IDs still present in PostgreSQL.
+    try:
+        delete_document_chunks(document_id)
+    except Exception:
+        pass
 
     # Remove the physical file after successful database deletion.
     if file_path and os.path.isfile(file_path):
@@ -559,6 +605,8 @@ def ask(
     current_user: dict = Depends(get_current_user),
 ):
     user_id = current_user["id"]
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     print("\n--- ASK API DEBUG ---")
     print("Authenticated user ID:", user_id)
