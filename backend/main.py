@@ -154,11 +154,18 @@ def register(request: RegisterRequest):
         )
 
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication credentials are required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     secret = os.getenv("JWT_SECRET")
     if not secret:
         raise HTTPException(
@@ -837,12 +844,28 @@ def update_knowledge_issue(
 class ConversationCreateRequest(BaseModel):
     title: str = Field(default="New conversation", min_length=1, max_length=200)
 
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Title cannot be empty.")
+        return value
+
 
 class MessageCreateRequest(BaseModel):
     role: str
-    content: str = Field(min_length=1)
-    sources: list[dict] = Field(default_factory=list)
-    suggested_questions: list[str] = Field(default_factory=list)
+    content: str = Field(min_length=1, max_length=20000)
+    sources: list[dict] = Field(default_factory=list, max_length=20)
+    suggested_questions: list[str] = Field(default_factory=list, max_length=10)
+
+    @field_validator("content")
+    @classmethod
+    def validate_content(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Message content cannot be empty.")
+        return value
 
 
 @app.post("/conversations", status_code=201)
@@ -961,6 +984,14 @@ def save_conversation_message_route(
 
 class ConversationRenameRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value):
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("Title cannot be empty.")
+        return value
 
 
 @app.patch("/conversations/{conversation_id}")
