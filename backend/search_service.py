@@ -1,7 +1,6 @@
 import math
 import re
 from collections import OrderedDict
-from functools import lru_cache
 
 from rank_bm25 import BM25Okapi
 
@@ -68,7 +67,6 @@ def _tokenize(text: str) -> list[str]:
         (text or "").lower()
     )
 
-@lru_cache(maxsize=8)
 def _get_bm25_index(
     allowed_document_ids: tuple[int, ...],
     _collection_count: int,
@@ -174,8 +172,11 @@ def semantic_search(
 ):
     empty_results = _empty_results()
 
-    if n_results < 1:
-        raise ValueError("n_results must be greater than zero")
+    if not isinstance(query, str) or not query.strip():
+        return empty_results
+
+    if not isinstance(n_results, int) or isinstance(n_results, bool) or n_results < 1:
+        raise ValueError("n_results must be a positive integer")
 
     # Authentication is still required.
     if user_id is None:
