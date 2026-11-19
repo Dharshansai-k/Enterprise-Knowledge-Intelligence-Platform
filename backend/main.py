@@ -13,7 +13,7 @@ from psycopg.errors import UniqueViolation
 from auth_service import authenticate_user, create_access_token, register_user
 import jwt
 from jwt.exceptions import InvalidTokenError
-from fastapi import Depends
+from fastapi import Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from auth_service import get_user_by_id
 from embedding_service import generate_embedding
@@ -881,6 +881,41 @@ def create_conversation_route(
         user_id=current_user["id"],
         title=title,
     )
+
+
+@app.get("/conversations/search")
+def search_conversations_route(
+    q: str = Query(default="", max_length=200),
+    current_user: dict = Depends(get_current_user),
+):
+    """Search a user's conversation titles and message contents."""
+    query = " ".join(q.split())
+    if not query:
+        return {"conversations": list_conversations(current_user["id"])}
+
+    pattern = f"%{query}%"
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at
+            FROM conversations c
+            LEFT JOIN chat_messages m ON m.conversation_id = c.id
+            WHERE c.user_id = %s
+              AND (c.title ILIKE %s OR m.content ILIKE %s)
+            ORDER BY c.updated_at DESC, c.id DESC;
+            """,
+            (current_user["id"], pattern, pattern),
+        ).fetchall()
+
+    return {"conversations": [
+        {
+            "id": row[0],
+            "title": row[1],
+            "created_at": row[2],
+            "updated_at": row[3],
+        }
+        for row in rows
+    ]}
 
 
 @app.get("/conversations")
