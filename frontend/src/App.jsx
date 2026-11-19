@@ -3,7 +3,7 @@ import "./App.css";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
 function App() {
   const [token, setToken] = useState(
@@ -48,6 +48,8 @@ function App() {
   const [renamingConversationId, setRenamingConversationId] = useState(null);
   const [renameTitle, setRenameTitle] = useState("");
   const [conversationSearch, setConversationSearch] = useState("");
+  const [conversationSearchResults, setConversationSearchResults] = useState([]);
+  const [conversationSearchLoading, setConversationSearchLoading] = useState(false);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [issueQuestion, setIssueQuestion] = useState("");
   const [issueCategory, setIssueCategory] = useState("missing_information");
@@ -348,11 +350,57 @@ const openConversation = async (conversationId) => {
 };
 
 
-const filteredConversations = conversations.filter((conversation) =>
-  (conversation.title || "New conversation")
-    .toLowerCase()
-    .includes(conversationSearch.trim().toLowerCase())
-);
+useEffect(() => {
+  if (!token) {
+    setConversationSearchResults([]);
+    return;
+  }
+
+  const query = conversationSearch.trim();
+  if (!query) {
+    setConversationSearchResults([]);
+    setConversationSearchLoading(false);
+    return;
+  }
+
+  let cancelled = false;
+  const timer = window.setTimeout(async () => {
+    setConversationSearchLoading(true);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/conversations/search?q=${encodeURIComponent(query)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        if (!cancelled) logout();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(data.detail || "Unable to search conversations.");
+      }
+      if (!cancelled) {
+        setConversationSearchResults(Array.isArray(data.conversations) ? data.conversations : []);
+      }
+    } catch (error) {
+      if (!cancelled) {
+        console.error("Conversation search error:", error);
+        setConversationSearchResults([]);
+      }
+    } finally {
+      if (!cancelled) setConversationSearchLoading(false);
+    }
+  }, 250);
+
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}, [conversationSearch, token]);
+
+const filteredConversations = conversationSearch.trim()
+  ? conversationSearchResults
+  : conversations;
 
 const renameConversation = async (conversationId) => {
   const title = renameTitle.trim();
@@ -1161,10 +1209,10 @@ const askQuestion = async (overrideQuestion) => {
       </div>
 
       <div className="conversation-list">
-        {historyLoading && filteredConversations.length === 0 ? (
-          <p className="conversation-empty">Loading chats...</p>
+        {(historyLoading || conversationSearchLoading) && filteredConversations.length === 0 ? (
+          <p className="conversation-empty">Searching chats...</p>
         ) : filteredConversations.length === 0 ? (
-          <p className="conversation-empty">No conversations yet</p>
+          <p className="conversation-empty">{conversationSearch.trim() ? "No matching conversations" : "No conversations yet"}</p>
         ) : (
           
 filteredConversations.map((conversation) => (
