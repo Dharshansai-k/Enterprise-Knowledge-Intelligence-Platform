@@ -30,8 +30,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState("");
   const [documents, setDocuments] = useState([]);
-  const [documentsLoading, setDocumentsLoading] = useState(false);
-  const [documentsError, setDocumentsError] = useState("");
+  const [documentsLoading] = useState(false);
+  const [documentsError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [uploadMessage, setUploadMessage] = useState("");
@@ -212,6 +212,12 @@ function App() {
 
   const logout = () => {
     localStorage.removeItem("access_token");
+    setConversations([]);
+    setActiveConversationId(null);
+    setCurrentUser(null);
+    setConversationSearch("");
+    setConversationSearchResults([]);
+    setConversationSearchLoading(false);
     setToken("");
     setEmail("");
     setPassword("");
@@ -351,17 +357,10 @@ const openConversation = async (conversationId) => {
 
 
 useEffect(() => {
-  if (!token) {
-    setConversationSearchResults([]);
-    return;
-  }
+  if (!token) return;
 
   const query = conversationSearch.trim();
-  if (!query) {
-    setConversationSearchResults([]);
-    setConversationSearchLoading(false);
-    return;
-  }
+  if (!query) return;
 
   let cancelled = false;
   const timer = window.setTimeout(async () => {
@@ -718,11 +717,6 @@ const uploadDocument = async (event) => {
   setUploadError("");
   setUploadMessage("");
 
-  const allowedTypes = [
-    "application/pdf",
-    "text/plain",
-  ];
-
   const hasAllowedExtension = /\.(pdf|txt)$/i.test(file.name);
 
   if (!hasAllowedExtension) {
@@ -887,14 +881,16 @@ const deleteDocument = async (doc) => {
 
 
 useEffect(() => {
-  if (token) {
+  if (!token) return;
+
+  const timer = window.setTimeout(() => {
     fetchConversations();
     fetchCurrentUser();
-  } else {
-    setConversations([]);
-    setActiveConversationId(null);
-    setCurrentUser(null);
-  }
+  }, 0);
+
+  return () => window.clearTimeout(timer);
+  // These functions are component-local and use the current token.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [token]);
 
 
